@@ -1,0 +1,7 @@
+# Runtime dependencies (reference only).
+# bdwn is a shell tool: dependencies are Debian packages, declared in
+# debian/control and installed by apt. Do not install these with pip.
+#
+# restic           - backup engine (encrypted, deduplicated)
+# openssh-client   - SFTP/SSH transport to the remote repository
+# adduser          - creation of the unprivileged system user

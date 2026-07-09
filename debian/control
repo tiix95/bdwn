@@ -1,0 +1,18 @@
+Source: bdwn
+Section: admin
+Priority: optional
+Maintainer: Tom <tom@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+
+Package: bdwn
+Architecture: all
+Depends: ${misc:Depends},
+         restic,
+         openssh-client,
+         adduser
+Description: Encrypted server backups to an SFTP repository
+ BackDown (bdwn) backs up selected directories to a remote SFTP repository
+ using restic. Backups are encrypted with a passphrase and driven by a
+ systemd timer running as an unprivileged system user. Configuration lives
+ in /etc/bdwn/bdwn.conf and the SSH connection in /var/lib/bdwn/.ssh/config.

@@ -1,0 +1,15 @@
+# /var/lib/bdwn/.ssh/config - SSH configuration for the bdwn backup user.
+# Mode 0600, owner bdwn:bdwn. Referenced by BDWN_REPO (sftp:backup-remote:...).
+
+Host backup-remote
+    HostName backup.example.com
+    Port 22
+    User backup
+    IdentityFile /var/lib/bdwn/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+# Before the first backup, record the remote host key so restic can connect
+# non-interactively (run as root):
+#   ssh-keyscan -p 22 backup.example.com >> /var/lib/bdwn/.ssh/known_hosts
+#   chown bdwn:bdwn /var/lib/bdwn/.ssh/known_hosts
+#   chmod 0600 /var/lib/bdwn/.ssh/known_hosts

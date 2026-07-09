@@ -1,0 +1,9 @@
+# Debian build artifacts
+*.deb
+*.buildinfo
+*.changes
+debian/changelog
+debian/files
+debian/.debhelper/
+debian/bdwn/
+debian/debhelper-build-stamp

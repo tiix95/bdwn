@@ -1,0 +1,54 @@
+[Unit]
+Description=BackDown restic backup to SFTP repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=bdwn
+Group=bdwn
+Environment=HOME=/var/lib/bdwn
+ExecStart=/usr/bin/bdwn backup
+
+# Directories (owned by bdwn)
+StateDirectory=bdwn
+StateDirectoryMode=0750
+CacheDirectory=bdwn
+
+# Filesystem
+ProtectSystem=strict
+# read-only so restic can read /home and /root while backing them up
+ProtectHome=read-only
+ReadWritePaths=/var/lib/bdwn /var/cache/bdwn
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Privileges
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+
+# Syscalls
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @clock @swap @reboot @obsolete @cpu-emulation @debug @raw-io
+
+# Network
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Misc
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+KeyringMode=private

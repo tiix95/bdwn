@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+APP_USER="bdwn"
+APP_GROUP="bdwn"
+DATA_DIR="/var/lib/bdwn"
+
+case "$1" in
+    purge)
+        # Remove data, config and cache
+        rm -rf "${DATA_DIR}"
+        rm -rf /etc/bdwn
+        rm -rf /var/cache/bdwn
+
+        # Remove system user and group
+        if getent passwd "${APP_USER}" > /dev/null 2>&1; then
+            deluser --system "${APP_USER}" || true
+        fi
+        if getent group "${APP_GROUP}" > /dev/null 2>&1; then
+            delgroup --system "${APP_GROUP}" || true
+        fi
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        ;;
+
+    *)
+        echo "postrm called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

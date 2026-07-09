@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	@# Nothing to build - shell script installed as-is
+
+override_dh_auto_test:
+	@# No tests during packaging
+
+override_dh_auto_install:
+	install -d debian/bdwn/usr/bin
+	install -m 0755 src/bdwn.sh debian/bdwn/usr/bin/bdwn
+	install -d debian/bdwn/usr/share/bdwn
+	install -m 0640 examples/bdwn.conf debian/bdwn/usr/share/bdwn/bdwn.conf.example
+	install -m 0644 examples/ssh_config debian/bdwn/usr/share/bdwn/ssh_config.example
+	install -d debian/bdwn/lib/systemd/system
+	install -m 0644 files/systemd/bdwn.service debian/bdwn/lib/systemd/system/bdwn.service
+	install -m 0644 files/systemd/bdwn.timer debian/bdwn/lib/systemd/system/bdwn.timer
+
+override_dh_installsystemd:
+	@# Timer enabled and started via postinst

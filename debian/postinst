@@ -1,0 +1,70 @@
+#!/bin/sh
+set -e
+
+APP_USER="bdwn"
+APP_GROUP="bdwn"
+DATA_DIR="/var/lib/bdwn"
+CONFIG_DIR="/etc/bdwn"
+CONFIG_FILE="${CONFIG_DIR}/bdwn.conf"
+SSH_DIR="${DATA_DIR}/.ssh"
+
+case "$1" in
+    configure)
+        # Create system group and user if they do not exist
+        if ! getent group "${APP_GROUP}" > /dev/null 2>&1; then
+            addgroup --system "${APP_GROUP}"
+        fi
+        if ! getent passwd "${APP_USER}" > /dev/null 2>&1; then
+            adduser --system \
+                --home "${DATA_DIR}" \
+                --no-create-home \
+                --ingroup "${APP_GROUP}" \
+                --shell /usr/sbin/nologin \
+                "${APP_USER}"
+        fi
+
+        # Data dir (unpriv user home) and SSH dir
+        install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 "${DATA_DIR}"
+        install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0700 "${SSH_DIR}"
+        # Config dir: root-owned, readable by the bdwn group
+        install -d -o root -g "${APP_GROUP}" -m 0750 "${CONFIG_DIR}"
+
+        # Seed the config from the example on first install only
+        if [ ! -e "${CONFIG_FILE}" ]; then
+            cp /usr/share/bdwn/bdwn.conf.example "${CONFIG_FILE}"
+            chown root:"${APP_GROUP}" "${CONFIG_FILE}"
+            chmod 0640 "${CONFIG_FILE}"
+        fi
+
+        # Seed the SSH config from the example on first install only
+        if [ ! -e "${SSH_DIR}/config" ]; then
+            cp /usr/share/bdwn/ssh_config.example "${SSH_DIR}/config"
+            chown "${APP_USER}":"${APP_GROUP}" "${SSH_DIR}/config"
+            chmod 0600 "${SSH_DIR}/config"
+        fi
+
+        # Reload units so systemd sees bdwn.timer / bdwn.service.
+        # The timer is NOT enabled automatically: the admin must fill in the
+        # config first, then enable it (see instructions below).
+        systemctl daemon-reload
+
+        echo ""
+        echo "bdwn installed. Next steps:"
+        echo "  1. Edit /etc/bdwn/bdwn.conf (repository, passphrase, paths)."
+        echo "  2. Set up SSH in /var/lib/bdwn/.ssh/ (config, private key, known_hosts)."
+        echo "  3. Test a backup: sudo -u bdwn HOME=/var/lib/bdwn bdwn backup"
+        echo "  4. Enable the daily timer: systemctl enable --now bdwn.timer"
+        echo ""
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0
