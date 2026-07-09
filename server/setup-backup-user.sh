@@ -11,8 +11,8 @@
 set -eu
 
 # Tunables (override via environment if needed)
-BACKUP_USER="${BACKUP_USER:-backup}"
-CHROOT_BASE="${CHROOT_BASE:-/srv/backups}"
+BACKUP_USER="${BACKUP_USER:-bdwn}"
+CHROOT_BASE="${CHROOT_BASE:-/backups/servers}"
 AUTH_KEYS_DIR="/etc/ssh/authorized_keys"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/bdwn-backup.conf"
 
