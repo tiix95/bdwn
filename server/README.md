@@ -33,7 +33,9 @@ shared `bdwn` group, with a private repository dir inside the jail.
    chroot).
 6. Installs an sshd drop-in at `/etc/ssh/sshd_config.d/bdwn-backup.conf` with a
    `Match Group bdwn` block forcing SFTP-only, chrooted, no-forwarding access.
-   One block covers every server user.
+   One block covers every server user. The block also sets `AllowGroups bdwn`
+   so the backup users are accepted even on servers hardened with a global
+   `AllowGroups` in `sshd_config` (see Hardening notes).
 7. Runs `sshd -t` and reloads ssh.
 
 ## Requirements
@@ -150,6 +152,15 @@ The `Match Group bdwn` block disables the shell, PTY, and all forwarding
 (`ForceCommand internal-sftp`, `PermitTTY no`, `X11Forwarding no`,
 `AllowTcpForwarding no`, `AllowAgentForwarding no`, `PermitTunnel no`), so the
 users can only speak SFTP inside the jail.
+
+The block also sets `AllowGroups bdwn`. On servers hardened with a global
+`AllowGroups` directive, the backup users would otherwise be rejected at login
+("not allowed because none of user's groups are listed in AllowGroups"). The
+drop-in is included at the top of Debian's `sshd_config` and the first obtained
+value wins, so this overrides the global list for the `bdwn` group only; all
+other connections keep the global policy. Caveat: if the server uses a global
+`AllowUsers` directive instead, the backup users must be added to it manually,
+as the drop-in cannot list them.
 
 All server users share the same jail: they can list the top-level directory
 names of the other servers, but the `0700` mode on each per-server dir stops

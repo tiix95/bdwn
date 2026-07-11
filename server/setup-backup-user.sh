@@ -56,6 +56,7 @@ if ! getent passwd "$SERVER_NAME" > /dev/null 2>&1; then
         --home-dir "/${SERVER_NAME}" --no-create-home \
         --shell /usr/sbin/nologin "$SERVER_NAME"
 fi
+adduser "$SERVER_NAME" "$BACKUP_GROUP"
 
 # 3. The chroot dir MUST be owned by root and not writable by group/others,
 #    otherwise sshd refuses to chroot into it.
@@ -78,9 +79,12 @@ chmod 0644 "$AUTH_KEYS_FILE"
 
 # 6. sshd drop-in: force SFTP-only, chrooted access for the whole backup
 #    group. One block covers every server user, so it is safe to rewrite.
+#    AllowGroups overrides a global AllowGroups (if any) for these users:
+#    without it, a hardened sshd_config would reject them at login.
 cat > "$SSHD_DROPIN" <<EOF
 # Managed by bdwn setup-backup-user.sh - do not edit by hand
 Match Group ${BACKUP_GROUP}
+    AllowGroups ${BACKUP_GROUP}
     AuthorizedKeysFile ${AUTH_KEYS_DIR}/%u
     ChrootDirectory ${CHROOT_BASE}
     ForceCommand internal-sftp
