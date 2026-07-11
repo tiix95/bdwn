@@ -1,17 +1,19 @@
 #!/bin/sh
 # setup-backup-user.sh - backup server side setup for a bdwn repository.
 #
-# Creates a locked-down system user reachable ONLY over SFTP, chrooted to its
-# own directory. The backup client can upload and manage its restic repository
-# there and do nothing else: no interactive shell, no command execution, no
-# port/agent forwarding, no access outside the jail.
+# All backup clients share a single chroot jail at CHROOT_BASE
+# (/backups/servers). Each client server gets its own locked-down system
+# user, reachable ONLY over SFTP, whose restic repository lives in
+# /backups/servers/<SERVER_NAME> (mode 0700, so servers cannot read each
+# other's backups). Inside the chroot the client sees it as /<SERVER_NAME>.
+# No interactive shell, no command execution, no port/agent forwarding.
 #
-# Run as root on the backup (repository) server.
-#   ./setup-backup-user.sh <client-public-key-file>
+# Run as root on the backup (repository) server, once per client server:
+#   ./setup-backup-user.sh <server-name> <client-public-key-file>
 set -eu
 
 # Tunables (override via environment if needed)
-BACKUP_USER="${BACKUP_USER:-bdwn}"
+BACKUP_GROUP="${BACKUP_GROUP:-bdwn}"
 CHROOT_BASE="${CHROOT_BASE:-/backups/servers}"
 AUTH_KEYS_DIR="/etc/ssh/authorized_keys"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/bdwn-backup.conf"
@@ -20,46 +22,54 @@ die() { echo "setup-backup-user: $*" >&2; exit 1; }
 
 [ "$(id -u)" = "0" ] || die "must run as root"
 
-PUBKEY_FILE="${1:-}"
-[ -n "$PUBKEY_FILE" ] && [ -r "$PUBKEY_FILE" ] \
-    || die "usage: $0 <client-public-key-file>"
+SERVER_NAME="${1:-}"
+PUBKEY_FILE="${2:-}"
+[ -n "$SERVER_NAME" ] && [ -n "$PUBKEY_FILE" ] && [ -r "$PUBKEY_FILE" ] \
+    || die "usage: $0 <server-name> <client-public-key-file>"
 
-CHROOT_DIR="${CHROOT_BASE}/${BACKUP_USER}"
-DATA_DIR="${CHROOT_DIR}/data"
+# The server name becomes a system user name: keep it to a safe charset.
+case "$SERVER_NAME" in
+    *[!a-z0-9_-]* | -*) die "invalid server name: $SERVER_NAME (use a-z 0-9 _ -)" ;;
+esac
 
-# 1. System group and user: no shell, home is the chroot dir.
-if ! getent group "$BACKUP_USER" > /dev/null 2>&1; then
-    groupadd --system "$BACKUP_USER"
+SERVER_DIR="${CHROOT_BASE}/${SERVER_NAME}"
+
+# 1. Shared system group for all backup users (used by the sshd Match block).
+if ! getent group "$BACKUP_GROUP" > /dev/null 2>&1; then
+    groupadd --system "$BACKUP_GROUP"
 fi
-if ! getent passwd "$BACKUP_USER" > /dev/null 2>&1; then
-    useradd --system --gid "$BACKUP_USER" \
-        --home-dir "$CHROOT_DIR" --no-create-home \
-        --shell /usr/sbin/nologin "$BACKUP_USER"
+
+# 2. Per-server system user: no shell, member of the shared group. Home is
+#    /<SERVER_NAME> so that, once chrooted, SFTP lands in the server's dir.
+if ! getent passwd "$SERVER_NAME" > /dev/null 2>&1; then
+    useradd --system --gid "$BACKUP_GROUP" \
+        --home-dir "/${SERVER_NAME}" --no-create-home \
+        --shell /usr/sbin/nologin "$SERVER_NAME"
 fi
 
-# 2. The chroot dir MUST be owned by root and not writable by group/others,
+# 3. The chroot dir MUST be owned by root and not writable by group/others,
 #    otherwise sshd refuses to chroot into it.
-mkdir -p "$CHROOT_DIR"
-chown root:root "$CHROOT_DIR"
-chmod 0755 "$CHROOT_DIR"
+mkdir -p "$CHROOT_BASE"
+chown root:root "$CHROOT_BASE"
+chmod 0755 "$CHROOT_BASE"
 
-# 3. Writable data dir inside the jail: this is where restic stores the repo.
-#    Seen as /data from inside the chroot.
-mkdir -p "$DATA_DIR"
-chown "$BACKUP_USER":"$BACKUP_USER" "$DATA_DIR"
-chmod 0700 "$DATA_DIR"
+# 4. Per-server repository dir inside the jail, private to its user.
+mkdir -p "$SERVER_DIR"
+chown "$SERVER_NAME":"$BACKUP_GROUP" "$SERVER_DIR"
+chmod 0700 "$SERVER_DIR"
 
-# 4. authorized_keys kept OUTSIDE the chroot, owned by root (read before chroot).
+# 5. authorized_keys kept OUTSIDE the chroot, owned by root (read before chroot).
 mkdir -p "$AUTH_KEYS_DIR"
 chmod 0755 "$AUTH_KEYS_DIR"
-install -m 0644 -o root -g root "$PUBKEY_FILE" "${AUTH_KEYS_DIR}/${BACKUP_USER}"
+install -m 0644 -o root -g root "$PUBKEY_FILE" "${AUTH_KEYS_DIR}/${SERVER_NAME}"
 
-# 5. sshd drop-in: force SFTP-only, chrooted access for this user only.
+# 6. sshd drop-in: force SFTP-only, chrooted access for the whole backup
+#    group. One block covers every server user, so it is safe to rewrite.
 cat > "$SSHD_DROPIN" <<EOF
 # Managed by bdwn setup-backup-user.sh - do not edit by hand
-Match User ${BACKUP_USER}
+Match Group ${BACKUP_GROUP}
     AuthorizedKeysFile ${AUTH_KEYS_DIR}/%u
-    ChrootDirectory ${CHROOT_BASE}/%u
+    ChrootDirectory ${CHROOT_BASE}
     ForceCommand internal-sftp
     PermitTTY no
     X11Forwarding no
@@ -69,7 +79,7 @@ Match User ${BACKUP_USER}
 EOF
 chmod 0644 "$SSHD_DROPIN"
 
-# 6. Validate the config, then reload sshd.
+# 7. Validate the config, then reload sshd.
 sshd -t || die "sshd config test failed, not reloading"
 if command -v systemctl > /dev/null 2>&1; then
     systemctl reload ssh 2> /dev/null \
@@ -78,7 +88,9 @@ if command -v systemctl > /dev/null 2>&1; then
 fi
 
 echo ""
-echo "Backup user '${BACKUP_USER}' ready (SFTP-only, chrooted to ${CHROOT_DIR})."
+echo "Backup user '${SERVER_NAME}' ready (SFTP-only, chrooted to ${CHROOT_BASE})."
+echo "Repository dir: ${SERVER_DIR} (seen as /${SERVER_NAME} from the client)."
 echo "On the client, set in /etc/bdwn/bdwn.conf:"
-echo "    BDWN_REPO=\"sftp:backup-remote:/data\""
+echo "    BDWN_REPO=\"sftp:backup-remote:/${SERVER_NAME}\""
+echo "And in /var/lib/bdwn/.ssh/config:  User ${SERVER_NAME}"
 echo ""

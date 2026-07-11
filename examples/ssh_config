@@ -4,7 +4,8 @@
 Host backup-remote
     HostName backup.example.com
     Port 22
-    User backup
+    # SFTP user created by setup-backup-user.sh: named after this server
+    User my-server-name
     IdentityFile /var/lib/bdwn/.ssh/id_ed25519
     IdentitiesOnly yes
 

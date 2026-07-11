@@ -71,7 +71,7 @@ use no spaces around `=`.
 Example:
 
 ```sh
-BDWN_REPO="sftp:backup-remote:/srv/backups/$(hostname)"
+BDWN_REPO="sftp:backup-remote:/$(hostname)"
 RESTIC_PASSWORD="change-me-to-a-strong-passphrase"
 BACKUP_PATHS="/etc /var/www /home"
 BDWN_EXCLUDES="*.tmp /home/*/.cache"
@@ -92,13 +92,14 @@ prepare the connection:
    chmod 0600 /var/lib/bdwn/.ssh/id_ed25519
    ```
 
-2. Edit `/var/lib/bdwn/.ssh/config` to match your remote host:
+2. Edit `/var/lib/bdwn/.ssh/config` to match your remote host. `User` is the
+   server name passed to `setup-backup-user.sh` (e.g. `myserver`):
 
    ```sshconfig
    Host backup-remote
        HostName backup.example.com
        Port 22
-       User backup
+       User myserver
        IdentityFile /var/lib/bdwn/.ssh/id_ed25519
        IdentitiesOnly yes
    ```
@@ -119,24 +120,25 @@ The remote SFTP account must have the matching public key in its
 
 The remote account that receives the backups should be locked down to SFTP
 only. The `server/` directory ships `setup-backup-user.sh`, which creates a
-chrooted system user with no shell, no command execution and no forwarding: it
-can only read/write its own restic repository over SFTP. Run it as root on the
-backup server with the client public key:
+system user per client server, named after it, chrooted to the shared
+`/backups/servers` jail with no shell, no command execution and no forwarding:
+it can only read/write its own restic repository over SFTP. Run it as root on
+the backup server, once per client, with the server name and the client public
+key:
 
 ```sh
-./setup-backup-user.sh id_ed25519.pub
+./setup-backup-user.sh myserver id_ed25519.pub
 ```
 
-Because the user is chrooted, the repository path the client sees is `/data`,
-regardless of where it lives on the server. With this setup, use:
+Because of the shared chroot, the repository path the client sees is
+`/<SERVER_NAME>` (its private dir inside the jail), regardless of where it
+lives on the backup server. With this setup, use:
 
 ```sh
-BDWN_REPO="sftp:backup-remote:/data"
+BDWN_REPO="sftp:backup-remote:/$(hostname)"
 ```
 
-The `/srv/backups/$(hostname)` form shown above applies when the SFTP account is
-not chrooted; the exact `BDWN_REPO` path depends on the server layout. See
-[server/README.md](server/README.md) for the full server-side procedure.
+See [server/README.md](server/README.md) for the full server-side procedure.
 
 ## Layout on the target system
 

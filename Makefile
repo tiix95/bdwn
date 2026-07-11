@@ -1,7 +1,7 @@
 # ------------------------------------------------------------------------------
 # bdwn - Debian package build
 # ------------------------------------------------------------------------------
-VERSION    := 0.2.0
+VERSION    := 0.3.0
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 IMAGE_NAME := bdwn
 DEB_VER    := $(VERSION)+git$(GIT_COMMIT)
