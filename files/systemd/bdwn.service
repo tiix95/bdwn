@@ -5,14 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=bdwn
-Group=bdwn
-Environment=HOME=/var/lib/bdwn
+# Runs as root so restic can read every path in BACKUP_PATHS. The SSH/SFTP
+# connection itself is dropped to the unprivileged 'bdwn' user by /usr/bin/bdwn
+# (runuser), so no root process ever talks to the network.
 ExecStart=/usr/bin/bdwn backup
 
-# Directories (owned by bdwn)
-StateDirectory=bdwn
-StateDirectoryMode=0750
+# Restic cache (root-owned; /var/lib/bdwn stays managed by the postinst,
+# owned by bdwn, since it holds the ssh config and key used after the drop)
 CacheDirectory=bdwn
 
 # Filesystem
@@ -31,17 +30,21 @@ ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
 
-# Privileges
+# Privileges: root, reduced to the minimum capability set:
+# - CAP_DAC_READ_SEARCH: read any file/dir listed in BACKUP_PATHS
+# - CAP_SETUID/CAP_SETGID: runuser drops to the bdwn user for the SSH client
+# - CAP_KILL: let restic terminate its bdwn-owned ssh child on abort
 NoNewPrivileges=yes
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_KILL
 
 # Syscalls
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@mount @clock @swap @reboot @obsolete @cpu-emulation @debug @raw-io
 
-# Network
+# Network (client only: nothing in the unit may listen)
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
 
 # Misc
 RestrictRealtime=yes

@@ -1,13 +1,14 @@
 # bdwn (BackDown)
 
 Encrypted server backups to a remote SFTP repository using restic, driven by a
-systemd timer running as an unprivileged system user.
+systemd timer running under a hardened unit.
 
 bdwn backs up a list of directories you choose to a remote SFTP server. Backups
 are stored in restic format, encrypted with a passphrase. A daily systemd timer
-runs the backup as the unprivileged `bdwn` user, connecting over SSH with a
-dedicated key. Retention (daily/weekly/monthly) is applied automatically after
-each run.
+runs the backup as root with a reduced capability set (so any path can be read),
+dropping privileges to the unprivileged `bdwn` user for the SSH/SFTP connection,
+made with a dedicated key. Retention (daily/weekly/monthly) is applied
+automatically after each run.
 
 ## Dependencies
 
@@ -36,7 +37,9 @@ The package `postinst` performs first-install setup:
 
 - Creates the `bdwn` system group and user (home `/var/lib/bdwn`, shell
   `/usr/sbin/nologin`).
-- Seeds `/etc/bdwn/bdwn.conf` from the example, owned `root:bdwn`, mode `0640`.
+- Seeds `/etc/bdwn/bdwn.conf` from the example, owned `root:root`, mode `0600`
+  (directory `/etc/bdwn` is `root:root`, `0700`). On upgrade from older
+  versions, the looser `0640` root:bdwn permissions are tightened.
 - Seeds `/var/lib/bdwn/.ssh/config` from the example, owned `bdwn:bdwn`,
   mode `0600`.
 - Reloads systemd so it sees the units. The `bdwn.timer` is **not** enabled
@@ -45,11 +48,11 @@ The package `postinst` performs first-install setup:
 Existing config and SSH files are never overwritten on upgrade.
 
 After install you must edit the config, set up the SSH key, test a backup, then
-enable the timer:
+enable the timer (both as root):
 
 ```
-sudo -u bdwn HOME=/var/lib/bdwn bdwn backup   # test once
-systemctl enable --now bdwn.timer             # start the daily schedule
+bdwn backup                          # test once
+systemctl enable --now bdwn.timer    # start the daily schedule
 ```
 
 ## Configuration
@@ -61,7 +64,7 @@ use no spaces around `=`.
 | ------------------- | -------- | -------------------------------------------------------------------------------------------- |
 | `BDWN_REPO`         | yes      | Restic repository. Form `sftp:<ssh-host>:/path`, where `<ssh-host>` is a `Host` entry in the SSH config. |
 | `RESTIC_PASSWORD`   | yes      | Encryption passphrase for the repository. Keep it secret.                                    |
-| `BACKUP_PATHS`      | yes      | Space-separated directories/files to back up. Must be readable by the `bdwn` user.           |
+| `BACKUP_PATHS`      | yes      | Space-separated directories/files to back up. Any path works (the service reads as root).    |
 | `BDWN_EXCLUDES`     | no       | Space-separated exclude patterns passed to restic.                                           |
 | `BDWN_KEEP_DAILY`   | no       | Daily snapshots to keep. Retention runs only if any keep value is set.                       |
 | `BDWN_KEEP_WEEKLY`  | no       | Weekly snapshots to keep.                                                                     |
@@ -148,7 +151,7 @@ See [server/README.md](server/README.md) for the full server-side procedure.
 | Path                              | Purpose                                          |
 | --------------------------------- | ------------------------------------------------ |
 | `/usr/bin/bdwn`                   | CLI wrapper around restic                        |
-| `/etc/bdwn/bdwn.conf`             | Configuration (`0640` root:bdwn)                 |
+| `/etc/bdwn/bdwn.conf`             | Configuration (`0600` root:root)                 |
 | `/var/lib/bdwn`                   | `bdwn` user home, holds `.ssh/` (config, key, known_hosts) |
 | `/var/cache/bdwn`                 | Restic cache                                      |
 | `/lib/systemd/system/bdwn.service`| Backup service (oneshot, hardened)               |
@@ -168,45 +171,35 @@ systemctl start bdwn.service
 journalctl -u bdwn.service    # view logs
 ```
 
-Run commands by hand as the `bdwn` user (set `HOME` so SSH finds its config):
+Run commands by hand as root:
 
 ```sh
-sudo -u bdwn HOME=/var/lib/bdwn bdwn backup       # run a backup + retention
-sudo -u bdwn HOME=/var/lib/bdwn bdwn snapshots    # list snapshots
-sudo -u bdwn HOME=/var/lib/bdwn bdwn check        # verify repository integrity
-sudo -u bdwn HOME=/var/lib/bdwn bdwn restic <args># arbitrary restic command
+bdwn backup          # run a backup + retention
+bdwn snapshots       # list snapshots
+bdwn check           # verify repository integrity
+bdwn restic <args>   # arbitrary restic command
 ```
 
 Use `bdwn restic ...` for anything not wrapped, for example a restore:
 
 ```sh
-sudo -u bdwn HOME=/var/lib/bdwn bdwn restic restore latest --target /tmp/restore
+bdwn restic restore latest --target /tmp/restore
 ```
 
 ## Security notes
 
-- The backup runs as the unprivileged `bdwn` user under a hardened systemd unit
-  (`ProtectSystem=strict`, empty capability set, `NoNewPrivileges`, syscall
-  filtering).
-- Every path in `BACKUP_PATHS` must be readable by the `bdwn` user. Files it
-  cannot read are skipped.
-- The passphrase is stored in `/etc/bdwn/bdwn.conf` (`0640` root:bdwn). Keep
-  this file secret and do not commit it anywhere.
-- To back up root-only files, grant the service read access with a systemd
-  override (advanced, optional):
-
-  ```sh
-  systemctl edit bdwn.service
-  ```
-
-  ```ini
-  [Service]
-  CapabilityBoundingSet=CAP_DAC_READ_SEARCH
-  AmbientCapabilities=CAP_DAC_READ_SEARCH
-  ```
-
-  This lets restic read any file regardless of permissions. Grant it only if you
-  understand the trade-off.
+- The backup runs as root under a hardened systemd unit (`ProtectSystem=strict`,
+  `NoNewPrivileges`, syscall filtering, `SocketBindDeny=any`), with the
+  capability set reduced to the minimum: `CAP_DAC_READ_SEARCH` (read any path in
+  `BACKUP_PATHS`), `CAP_SETUID`/`CAP_SETGID` (privilege drop for SSH) and
+  `CAP_KILL` (terminate the ssh child).
+- The network-facing ssh process never runs as root: when the repository is
+  `sftp:`, `/usr/bin/bdwn` spawns it via `runuser -u bdwn`, using bdwn's SSH
+  config, key and known_hosts, with `RESTIC_PASSWORD` stripped from its
+  environment so it never sees the passphrase. Run as a non-root user, `bdwn`
+  behaves as before (no privilege drop).
+- The passphrase is stored in `/etc/bdwn/bdwn.conf` (`0600` root:root, readable
+  by root only). Keep this file secret and do not commit it anywhere.
 
 ## Uninstall
 
