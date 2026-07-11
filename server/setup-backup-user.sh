@@ -8,8 +8,10 @@
 # other's backups). Inside the chroot the client sees it as /<SERVER_NAME>.
 # No interactive shell, no command execution, no port/agent forwarding.
 #
-# Run as root on the backup (repository) server, once per client server:
+# Run as root on the backup (repository) server, once per client server.
+# The public key can be given as a file path or inline:
 #   ./setup-backup-user.sh <server-name> <client-public-key-file>
+#   ./setup-backup-user.sh <server-name> "ssh-ed25519 AAAA... comment"
 set -eu
 
 # Tunables (override via environment if needed)
@@ -23,14 +25,22 @@ die() { echo "setup-backup-user: $*" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "must run as root"
 
 SERVER_NAME="${1:-}"
-PUBKEY_FILE="${2:-}"
-[ -n "$SERVER_NAME" ] && [ -n "$PUBKEY_FILE" ] && [ -r "$PUBKEY_FILE" ] \
-    || die "usage: $0 <server-name> <client-public-key-file>"
+PUBKEY="${2:-}"
+[ -n "$SERVER_NAME" ] && [ -n "$PUBKEY" ] \
+    || die "usage: $0 <server-name> <client-public-key-file | inline-public-key>"
 
 # The server name becomes a system user name: keep it to a safe charset.
 case "$SERVER_NAME" in
     *[!a-z0-9_-]* | -*) die "invalid server name: $SERVER_NAME (use a-z 0-9 _ -)" ;;
 esac
+
+# Accept the key as a readable file or as the key string itself, and
+# validate it BEFORE touching the system.
+if [ -r "$PUBKEY" ]; then
+    PUBKEY="$(cat "$PUBKEY")"
+fi
+printf '%s\n' "$PUBKEY" | ssh-keygen -l -f /dev/stdin > /dev/null 2>&1 \
+    || die "not a valid SSH public key: $PUBKEY"
 
 SERVER_DIR="${CHROOT_BASE}/${SERVER_NAME}"
 
@@ -61,7 +71,10 @@ chmod 0700 "$SERVER_DIR"
 # 5. authorized_keys kept OUTSIDE the chroot, owned by root (read before chroot).
 mkdir -p "$AUTH_KEYS_DIR"
 chmod 0755 "$AUTH_KEYS_DIR"
-install -m 0644 -o root -g root "$PUBKEY_FILE" "${AUTH_KEYS_DIR}/${SERVER_NAME}"
+AUTH_KEYS_FILE="${AUTH_KEYS_DIR}/${SERVER_NAME}"
+printf '%s\n' "$PUBKEY" > "$AUTH_KEYS_FILE"
+chown root:root "$AUTH_KEYS_FILE"
+chmod 0644 "$AUTH_KEYS_FILE"
 
 # 6. sshd drop-in: force SFTP-only, chrooted access for the whole backup
 #    group. One block covers every server user, so it is safe to rewrite.

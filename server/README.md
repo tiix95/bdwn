@@ -46,7 +46,8 @@ shared `bdwn` group, with a private repository dir inside the jail.
   Include /etc/ssh/sshd_config.d/*.conf
   ```
 
-- The client's SSH public key file, copied to this server.
+- The client's SSH public key, either as a file copied to this server or
+  passed inline as the second argument.
 
 ## Usage
 
@@ -57,7 +58,8 @@ shared `bdwn` group, with a private repository dir inside the jail.
    ssh-keygen -t ed25519 -f /var/lib/bdwn/.ssh/id_ed25519
    ```
 
-2. Copy the public key to the backup server:
+2. Copy the public key to the backup server (optional if you pass the key
+   inline in step 3):
 
    ```sh
    scp /var/lib/bdwn/.ssh/id_ed25519.pub server:/root/id_ed25519.pub
@@ -65,11 +67,21 @@ shared `bdwn` group, with a private repository dir inside the jail.
 
 3. On the SERVER, run the setup script as root, once per client server. The
    first argument is the server name (it becomes the SFTP user name, charset
-   `a-z 0-9 _ -`, must not start with `-`):
+   `a-z 0-9 _ -`, must not start with `-`). The second argument is the client
+   public key, either as a path to the key file:
 
    ```sh
    ./setup-backup-user.sh myserver /root/id_ed25519.pub
    ```
+
+   or as the key itself, inline (quote it):
+
+   ```sh
+   ./setup-backup-user.sh myserver "ssh-ed25519 AAAA... root@myserver"
+   ```
+
+   In both cases the key is validated with `ssh-keygen` before any change is
+   made to the system; an invalid key aborts the script.
 
 The script prints the exact `BDWN_REPO` value to set on the client when done.
 Run it again with a different name and key for each additional client server.

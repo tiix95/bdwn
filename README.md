@@ -130,6 +130,9 @@ key:
 ./setup-backup-user.sh myserver id_ed25519.pub
 ```
 
+The public key can also be passed inline instead of a file path, e.g.
+`./setup-backup-user.sh myserver "ssh-ed25519 AAAA... root@myserver"`.
+
 Because of the shared chroot, the repository path the client sees is
 `/<SERVER_NAME>` (its private dir inside the jail), regardless of where it
 lives on the backup server. With this setup, use:
