@@ -61,6 +61,37 @@ build_excludes() {
     done
 }
 
+# Export the ZFS datasets listed in BDWN_ZFS_DATASETS to dump files so they
+# can be picked up by the restic backup. Each entry is snapshotted recursively
+# under a fixed name (@bdwn, destroyed after the send, and cleaned up first if
+# a previous run died), then every dataset/volume below it is sent to its own
+# file in BDWN_ZFS_DUMP_DIR ('/' in names becomes '_').
+ZFS_SNAP="bdwn"
+export_zfs() {
+    command -v zfs >/dev/null 2>&1 || die "BDWN_ZFS_DATASETS is set but zfs is not installed (zfsutils-linux)"
+    ZFS_DUMP_DIR="${BDWN_ZFS_DUMP_DIR:-/var/backups/bdwn/zfs}"
+    mkdir -p "$ZFS_DUMP_DIR"
+    chmod 0700 "$ZFS_DUMP_DIR"
+
+    for entry in $BDWN_ZFS_DATASETS; do
+        zfs list "$entry" >/dev/null 2>&1 || die "unknown ZFS dataset: $entry"
+        zfs destroy -r "${entry}@${ZFS_SNAP}" 2>/dev/null || true
+        zfs snapshot -r "${entry}@${ZFS_SNAP}"
+        for dataset in $(zfs list -rH -o name -t filesystem,volume "$entry"); do
+            dump_file="$ZFS_DUMP_DIR/$(echo "$dataset" | tr '/' '_').zfs"
+            echo "bdwn: exporting ${dataset}@${ZFS_SNAP} to $dump_file"
+            zfs send "${dataset}@${ZFS_SNAP}" > "$dump_file"
+        done
+        zfs destroy -r "${entry}@${ZFS_SNAP}"
+    done
+}
+
+# Remove the dump files once they are safely in the repository: restic
+# deduplicates by content, so keeping them locally buys nothing.
+cleanup_zfs() {
+    find "$ZFS_DUMP_DIR" -name '*.zfs' -type f -delete
+}
+
 # Initialize the repository the first time it is used.
 ensure_repo() {
     if ! run_restic cat config >/dev/null 2>&1; then
@@ -72,8 +103,18 @@ ensure_repo() {
 cmd_backup() {
     ensure_repo
     build_excludes
+
+    if [ -n "${BDWN_ZFS_DATASETS:-}" ]; then
+        export_zfs
+        BACKUP_PATHS="$BACKUP_PATHS $ZFS_DUMP_DIR"
+    fi
+
     # shellcheck disable=SC2086
     run_restic backup --verbose $EXCLUDE_ARGS $BACKUP_PATHS
+
+    if [ -n "${BDWN_ZFS_DATASETS:-}" ]; then
+        cleanup_zfs
+    fi
 
     # Apply retention only when at least one keep policy is configured.
     if [ -n "${BDWN_KEEP_DAILY:-}${BDWN_KEEP_WEEKLY:-}${BDWN_KEEP_MONTHLY:-}" ]; then

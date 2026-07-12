@@ -7,6 +7,8 @@ DATA_DIR="/var/lib/bdwn"
 CONFIG_DIR="/etc/bdwn"
 CONFIG_FILE="${CONFIG_DIR}/bdwn.conf"
 SSH_DIR="${DATA_DIR}/.ssh"
+BACKUP_SERVER=dagobah
+BACKUP_SERVER_IP=192.168.7.104
 
 case "$1" in
     configure)
@@ -30,6 +32,10 @@ case "$1" in
         # root, so nothing else needs to read the passphrase; also tightens
         # the 0640 root:bdwn permissions left by older versions.
         install -d -o root -g root -m 0700 "${CONFIG_DIR}"
+        # Default ZFS dump area: must exist before the service starts, since
+        # the zfs drop-in lists it in ReadWritePaths (mount namespace is set
+        # up at unit start, before /usr/bin/bdwn could create it).
+        install -d -o root -g root -m 0700 /var/backups/bdwn
 
         # Seed the config from the example on first install only
         if [ ! -e "${CONFIG_FILE}" ]; then

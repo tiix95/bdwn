@@ -11,6 +11,7 @@ Depends: ${misc:Depends},
          restic,
          openssh-client,
          adduser
+Suggests: zfsutils-linux
 Description: Encrypted server backups to an SFTP repository
  BackDown (bdwn) backs up selected directories to a remote SFTP repository
  using restic. Backups are encrypted with a passphrase and driven by a

@@ -8,7 +8,8 @@ are stored in restic format, encrypted with a passphrase. A daily systemd timer
 runs the backup as root with a reduced capability set (so any path can be read),
 dropping privileges to the unprivileged `bdwn` user for the SSH/SFTP connection,
 made with a dedicated key. Retention (daily/weekly/monthly) is applied
-automatically after each run.
+automatically after each run. ZFS pools/datasets/volumes can optionally be
+exported with `zfs send` and included in the backup.
 
 ## Dependencies
 
@@ -18,6 +19,10 @@ automatically on install:
 - `restic` - backup engine
 - `openssh-client` - SSH/SFTP transport
 - `adduser` - creates the `bdwn` system user
+
+Optional (declared as a suggestion, not installed automatically):
+
+- `zfsutils-linux` - only needed for [ZFS backup](#zfs-backup)
 
 ## Build
 
@@ -70,6 +75,8 @@ use no spaces around `=`.
 | `BDWN_KEEP_WEEKLY`  | no       | Weekly snapshots to keep.                                                                     |
 | `BDWN_KEEP_MONTHLY` | no       | Monthly snapshots to keep.                                                                    |
 | `BDWN_CACHE_DIR`    | no       | Restic cache directory. Defaults to `/var/cache/bdwn`.                                        |
+| `BDWN_ZFS_DATASETS` | no       | Space-separated ZFS pools/datasets/volumes to export and back up. See [ZFS backup](#zfs-backup). |
+| `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
 
 Example:
 
@@ -81,6 +88,43 @@ BDWN_EXCLUDES="*.tmp /home/*/.cache"
 BDWN_KEEP_DAILY="7"
 BDWN_KEEP_WEEKLY="4"
 BDWN_KEEP_MONTHLY="6"
+```
+
+## ZFS backup
+
+When `BDWN_ZFS_DATASETS` is set, `bdwn backup` runs this sequence before the
+restic backup, for each listed pool/dataset/volume:
+
+1. Snapshot it recursively under the fixed name `@bdwn` (a stale `@bdwn`
+   snapshot left by a crashed run is destroyed first).
+2. Export every filesystem/volume below it with `zfs send` to a dump file in
+   `BDWN_ZFS_DUMP_DIR` (dataset name with `/` replaced by `_`, extension
+   `.zfs`).
+3. Destroy the snapshot.
+
+The dump directory is added to the paths backed up by restic, and the dump
+files are deleted after a successful backup: restic deduplicates by content,
+so keeping them locally buys nothing. Requires the `zfsutils-linux` package.
+
+The hardened `bdwn.service` blocks ZFS by default (`PrivateDevices=yes` hides
+`/dev/zfs`, no `CAP_SYS_ADMIN`). The package ships a drop-in example that
+relaxes only what ZFS needs (`PrivateDevices=no` with a minimal `DeviceAllow`
+list, `CAP_SYS_ADMIN`, `ReadWritePaths=/var/backups/bdwn`). To enable ZFS
+backup under the systemd timer:
+
+```sh
+install -d /etc/systemd/system/bdwn.service.d
+cp /usr/share/bdwn/zfs-dropin.conf.example /etc/systemd/system/bdwn.service.d/zfs.conf
+systemctl daemon-reload
+```
+
+Running `bdwn backup` by hand as root works without the drop-in.
+
+To restore, fetch the dump from the repository, then feed it to `zfs receive`:
+
+```sh
+bdwn restic restore latest --target /tmp/restore --include /var/backups/bdwn/zfs
+zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zfs
 ```
 
 ## SSH setup
@@ -156,7 +200,8 @@ See [server/README.md](server/README.md) for the full server-side procedure.
 | `/var/cache/bdwn`                 | Restic cache                                      |
 | `/lib/systemd/system/bdwn.service`| Backup service (oneshot, hardened)               |
 | `/lib/systemd/system/bdwn.timer`  | Daily timer                                       |
-| `/usr/share/bdwn/*.example`       | Example config and SSH config                    |
+| `/usr/share/bdwn/*.example`       | Example config, SSH config and ZFS systemd drop-in |
+| `/var/backups/bdwn`               | ZFS dump area (`0700` root:root, created by postinst, removed on purge) |
 
 ## Usage
 
@@ -200,10 +245,13 @@ bdwn restic restore latest --target /tmp/restore
   behaves as before (no privilege drop).
 - The passphrase is stored in `/etc/bdwn/bdwn.conf` (`0600` root:root, readable
   by root only). Keep this file secret and do not commit it anywhere.
+- The relaxations needed by ZFS (`CAP_SYS_ADMIN`, access to `/dev/zfs`) are
+  **not** applied by default: they are opt-in via the systemd drop-in described
+  in [ZFS backup](#zfs-backup).
 
 ## Uninstall
 
 ```sh
 apt remove bdwn     # stop and disable the timer, remove program files
-apt purge bdwn      # also remove the bdwn user, /etc/bdwn, /var/lib/bdwn, /var/cache/bdwn
+apt purge bdwn      # also remove the bdwn user, /etc/bdwn, /var/lib/bdwn, /var/cache/bdwn, /var/backups/bdwn
 ```

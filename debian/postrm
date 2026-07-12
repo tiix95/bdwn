@@ -11,6 +11,7 @@ case "$1" in
         rm -rf "${DATA_DIR}"
         rm -rf /etc/bdwn
         rm -rf /var/cache/bdwn
+        rm -rf /var/backups/bdwn
 
         # Remove system user and group
         if getent passwd "${APP_USER}" > /dev/null 2>&1; then
