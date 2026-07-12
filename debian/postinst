@@ -7,8 +7,28 @@ DATA_DIR="/var/lib/bdwn"
 CONFIG_DIR="/etc/bdwn"
 CONFIG_FILE="${CONFIG_DIR}/bdwn.conf"
 SSH_DIR="${DATA_DIR}/.ssh"
+
+# Backup server defaults, overridable through debconf (bdwn/backup-server,
+# bdwn/backup-server-ip, bdwn/backup-server-port): preseed the values with
+# debconf-set-selections before install (see README, "Package configuration").
 BACKUP_SERVER=dagobah
 BACKUP_SERVER_IP=192.168.7.104
+BACKUP_SERVER_PORT=14789
+
+if [ -e /usr/share/debconf/confmodule ]; then
+    . /usr/share/debconf/confmodule
+    if db_get bdwn/backup-server && [ -n "$RET" ]; then
+        BACKUP_SERVER="$RET"
+    fi
+    if db_get bdwn/backup-server-ip && [ -n "$RET" ]; then
+        BACKUP_SERVER_IP="$RET"
+    fi
+    if db_get bdwn/backup-server-port && [ -n "$RET" ]; then
+        BACKUP_SERVER_PORT="$RET"
+    fi
+    # Release the debconf pipe so the echo blocks below reach the terminal
+    db_stop
+fi
 
 case "$1" in
     configure)
@@ -49,7 +69,9 @@ case "$1" in
             cp /usr/share/bdwn/ssh_config.example "${SSH_DIR}/config"
             chown "${APP_USER}":"${APP_GROUP}" "${SSH_DIR}/config"
             chmod 0600 "${SSH_DIR}/config"
+            sed -i "s/my-server-name/$(hostname)/g; s/backup-server/$BACKUP_SERVER/g; s/backup-server-ip/$BACKUP_SERVER_IP/g; s/backup-server-port/$BACKUP_SERVER_PORT/g" "${SSH_DIR}/config"
         fi
+
 
         # Since 0.5.0 the service runs as root (privileges are dropped only
         # for the SSH connection): migrate the restic cache left by the old
@@ -63,12 +85,19 @@ case "$1" in
         # config first, then enable it (see instructions below).
         systemctl daemon-reload
 
+        # Map the backup server alias, once (configure also runs on upgrades)
+        if ! grep -q "[[:space:]]${BACKUP_SERVER}\$" /etc/hosts; then
+            echo "$BACKUP_SERVER_IP $BACKUP_SERVER" >> /etc/hosts
+        fi
+
         echo ""
         echo "bdwn installed. Next steps:"
         echo "  1. Edit /etc/bdwn/bdwn.conf (repository, passphrase, paths)."
         echo "  2. Set up SSH in /var/lib/bdwn/.ssh/ (config, private key, known_hosts)."
         echo "  3. Test a backup (as root): bdwn backup"
         echo "  4. Enable the daily timer: systemctl enable --now bdwn.timer"
+        echo "  5. Add the following nftables rule :"
+        echo "    oifname wg-un1verse ip daddr $BACKUP_SERVER_IP tcp dport $BACKUP_SERVER_PORT meta skuid $APP_USER counter accept comment \"backup-$BACKUP_SERVER\""
         echo ""
         ;;
 

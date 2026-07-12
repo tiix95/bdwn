@@ -1,0 +1,18 @@
+Template: bdwn/backup-server
+Type: string
+Default: dagobah
+Description: Backup server host alias
+ Name used for the Host entry in the bdwn SSH config and for the
+ /etc/hosts line pointing to the backup server.
+
+Template: bdwn/backup-server-ip
+Type: string
+Default: 192.168.7.104
+Description: Backup server IP address
+ Address written to /etc/hosts for the backup server host alias.
+
+Template: bdwn/backup-server-port
+Type: string
+Default: 14789
+Description: Backup server SSH port
+ Port used for the SFTP connection to the backup server.

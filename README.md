@@ -46,7 +46,11 @@ The package `postinst` performs first-install setup:
   (directory `/etc/bdwn` is `root:root`, `0700`). On upgrade from older
   versions, the looser `0640` root:bdwn permissions are tightened.
 - Seeds `/var/lib/bdwn/.ssh/config` from the example, owned `bdwn:bdwn`,
-  mode `0600`.
+  mode `0600`. The host alias, IP and port placeholders are filled from the
+  debconf values (or their defaults), see
+  [Package configuration (debconf)](#package-configuration-debconf).
+- Adds a `<ip> <alias>` line for the backup server to `/etc/hosts`, only if
+  the alias is not already present.
 - Reloads systemd so it sees the units. The `bdwn.timer` is **not** enabled
   automatically: you enable it yourself once the config is ready.
 
@@ -59,6 +63,37 @@ enable the timer (both as root):
 bdwn backup                          # test once
 systemctl enable --now bdwn.timer    # start the daily schedule
 ```
+
+## Package configuration (debconf)
+
+The first-install setup uses three values to fill the seeded SSH config, add
+the `/etc/hosts` line and print the suggested nftables rule:
+
+| Debconf key               | Default         | Purpose                                    |
+| ------------------------- | --------------- | ------------------------------------------ |
+| `bdwn/backup-server`      | `dagobah`       | SSH host alias of the backup server        |
+| `bdwn/backup-server-ip`   | `192.168.7.104` | IP written to `/etc/hosts` for the alias   |
+| `bdwn/backup-server-port` | `14789`         | Port used for the SFTP connection          |
+
+There is no interactive prompt. To override a default, preseed the values
+before installing:
+
+```sh
+cat <<'EOF' | debconf-set-selections
+bdwn bdwn/backup-server string mybackup
+bdwn bdwn/backup-server-ip string 10.0.0.4
+bdwn bdwn/backup-server-port string 22
+EOF
+apt install ./bdwn_*.deb
+```
+
+Any key not preseeded keeps its built-in default. Inspect the current values
+with `debconf-show bdwn`.
+
+Caveat: the values only matter on **first** install. The SSH config is seeded
+once (never overwritten on upgrade) and the `/etc/hosts` line is added only if
+missing. To change them afterwards, edit `/var/lib/bdwn/.ssh/config` and
+`/etc/hosts` by hand.
 
 ## Configuration
 
