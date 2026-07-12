@@ -8,9 +8,10 @@ DEB_VER    := $(VERSION)+git$(GIT_COMMIT)
 DEB_ARCH   := all
 DEB_NAME   := $(IMAGE_NAME)_$(DEB_VER)_$(DEB_ARCH)
 
-REPO       := git.local
+REPO       := git.un1verse.space
 REPO_USER  := tiix
-REPO_CA    := pki/ca.crt
+REPO_CA    := ${UNIVERSE_GITROOT}/pooki/pki/ca.crt
+
 
 .DEFAULT_GOAL := help
 .PHONY: help deb push-deb clean
