@@ -34,5 +34,6 @@ push-deb: deb
 
 ## clean     : Remove all build artifacts
 clean:
+	-rm -f bdwn*.deb bdwn*.buildinfo bdwn*.changes
 	-dh_clean 2>/dev/null || true
 	-rm -f $(DEB_NAME).deb $(IMAGE_NAME)_$(DEB_VER)_*.buildinfo $(IMAGE_NAME)_$(DEB_VER)_*.changes
