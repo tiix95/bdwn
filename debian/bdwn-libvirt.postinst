@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Reload units so systemd sees the bdwn-libvirt@ template.
+        # Timers are NOT enabled automatically: enable one per VM to back up.
+        systemctl daemon-reload
+
+        echo ""
+        echo "bdwn-libvirt installed. Enable a timer per VM to back up:"
+        echo "  systemctl enable --now bdwn-libvirt@<vm-name>.timer"
+        echo ""
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

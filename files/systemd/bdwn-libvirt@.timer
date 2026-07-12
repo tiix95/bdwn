@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily BackDown libvirt VM backup of %i
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+# Large randomized delay to spread the VM backups (and their downtime window)
+RandomizedDelaySec=3600
+
+[Install]
+WantedBy=timers.target

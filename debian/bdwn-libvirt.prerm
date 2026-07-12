@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|deconfigure)
+        # Stop and disable every enabled bdwn-libvirt@<vm> instance
+        # (systemctl disable does not expand globs, walk the enable links)
+        for link in /etc/systemd/system/timers.target.wants/bdwn-libvirt@*.timer; do
+            [ -e "$link" ] || continue
+            unit="$(basename "$link")"
+            systemctl stop "$unit" > /dev/null 2>&1 || true
+            systemctl disable "$unit" > /dev/null 2>&1 || true
+        done
+        ;;
+
+    upgrade|failed-upgrade)
+        ;;
+
+    *)
+        echo "prerm called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

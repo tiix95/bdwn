@@ -1,12 +1,13 @@
 # ------------------------------------------------------------------------------
 # bdwn - Debian package build
 # ------------------------------------------------------------------------------
-VERSION    := 0.7.0
+VERSION    := 0.8.0
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 IMAGE_NAME := bdwn
 DEB_VER    := $(VERSION)+git$(GIT_COMMIT)
 DEB_ARCH   := all
 DEB_NAME   := $(IMAGE_NAME)_$(DEB_VER)_$(DEB_ARCH)
+DEB_LV_NAME := $(IMAGE_NAME)-libvirt_$(DEB_VER)_$(DEB_ARCH)
 
 REPO       := git.un1verse.space
 REPO_USER  := tiix
@@ -25,13 +26,15 @@ deb:
 	printf '$(IMAGE_NAME) ($(DEB_VER)) trixie; urgency=medium\n\n  * Build from git commit $(GIT_COMMIT)\n\n -- Tom <tom@localhost>  $(shell date -R)\n' > debian/changelog
 	chmod +x debian/rules
 	dpkg-buildpackage -us -uc -b
-	mv ../$(DEB_NAME).deb ../$(IMAGE_NAME)_$(DEB_VER)_*.buildinfo ../$(IMAGE_NAME)_$(DEB_VER)_*.changes .
+	mv ../$(DEB_NAME).deb ../$(DEB_LV_NAME).deb ../$(IMAGE_NAME)_$(DEB_VER)_*.buildinfo ../$(IMAGE_NAME)_$(DEB_VER)_*.changes .
 
-## push-deb  : Push the Debian package to the gitea repo
+## push-deb  : Push the Debian packages to the gitea repo
 push-deb: deb
-	curl -n --cacert $(REPO_CA) \
-		--upload-file $(DEB_NAME).deb \
-		https://$(REPO)/api/packages/$(REPO_USER)/debian/pool/trixie/main/upload
+	for deb in $(DEB_NAME).deb $(DEB_LV_NAME).deb; do \
+		curl -n --cacert $(REPO_CA) \
+			--upload-file $$deb \
+			https://$(REPO)/api/packages/$(REPO_USER)/debian/pool/trixie/main/upload; \
+	done
 
 ## clean     : Remove all build artifacts
 clean:

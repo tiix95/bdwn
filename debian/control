@@ -17,3 +17,15 @@ Description: Encrypted server backups to an SFTP repository
  using restic. Backups are encrypted with a passphrase and driven by a
  systemd timer running as an unprivileged system user. Configuration lives
  in /etc/bdwn/bdwn.conf and the SSH connection in /var/lib/bdwn/.ssh/config.
+
+Package: bdwn-libvirt
+Architecture: all
+Depends: ${misc:Depends},
+         bdwn (= ${source:Version}),
+         libvirt-clients
+Description: Libvirt VM backups for BackDown
+ Cold backups of libvirt virtual machines into the bdwn restic repository:
+ clean shutdown, cold external snapshot, VM restart, then export of the
+ stable base images and domain XML while the VM runs on the overlays.
+ A systemd timer template is provided, enable one instance per VM:
+ systemctl enable --now bdwn-libvirt@<vm-name>.timer

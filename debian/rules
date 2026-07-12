@@ -19,6 +19,11 @@ override_dh_auto_install:
 	install -d debian/bdwn/lib/systemd/system
 	install -m 0644 files/systemd/bdwn.service debian/bdwn/lib/systemd/system/bdwn.service
 	install -m 0644 files/systemd/bdwn.timer debian/bdwn/lib/systemd/system/bdwn.timer
+	install -d debian/bdwn-libvirt/usr/bin
+	install -m 0755 src/bdwn-libvirt.sh debian/bdwn-libvirt/usr/bin/bdwn-libvirt
+	install -d debian/bdwn-libvirt/lib/systemd/system
+	install -m 0644 files/systemd/bdwn-libvirt@.service debian/bdwn-libvirt/lib/systemd/system/bdwn-libvirt@.service
+	install -m 0644 files/systemd/bdwn-libvirt@.timer debian/bdwn-libvirt/lib/systemd/system/bdwn-libvirt@.timer
 
 override_dh_installsystemd:
 	@# Timer enabled and started via postinst

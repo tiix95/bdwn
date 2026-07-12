@@ -1,0 +1,55 @@
+[Unit]
+Description=BackDown libvirt VM backup of %i
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root: talks to libvirtd, reads the VM disk images and removes the
+# snapshot overlays. The SSH/SFTP connection is dropped to the unprivileged
+# 'bdwn' user by /usr/bin/bdwn (runuser), as for bdwn.service.
+ExecStart=/usr/bin/bdwn-libvirt %i
+
+# Restic cache shared with bdwn.service
+CacheDirectory=bdwn
+
+# Filesystem
+ProtectSystem=strict
+ProtectHome=read-only
+# /var/lib/libvirt: overlay files removed after the blockcommit pivot
+# /var/backups/bdwn: staging area for the domain XML dumps
+ReadWritePaths=/var/lib/bdwn /var/cache/bdwn /var/lib/libvirt /var/backups/bdwn
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Privileges: same reduced set as bdwn.service (virsh is only an RPC client
+# on the libvirt unix socket, the heavy lifting is done by libvirtd/qemu)
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_KILL
+
+# Syscalls
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @clock @swap @reboot @obsolete @cpu-emulation @debug @raw-io
+
+# Network (client only: nothing in the unit may listen)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
+
+# Misc
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+KeyringMode=private

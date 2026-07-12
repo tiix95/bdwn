@@ -60,6 +60,7 @@ case "$1" in
         # Seed the config from the example on first install only
         if [ ! -e "${CONFIG_FILE}" ]; then
             cp /usr/share/bdwn/bdwn.conf.example "${CONFIG_FILE}"
+            sed -i "s/backup-remote:\/server-hostname/$BACKUP_SERVER:\/$(hostname)/g" "${CONFIG_FILE}"
         fi
         chown root:root "${CONFIG_FILE}"
         chmod 0600 "${CONFIG_FILE}"
@@ -69,7 +70,7 @@ case "$1" in
             cp /usr/share/bdwn/ssh_config.example "${SSH_DIR}/config"
             chown "${APP_USER}":"${APP_GROUP}" "${SSH_DIR}/config"
             chmod 0600 "${SSH_DIR}/config"
-            sed -i "s/my-server-name/$(hostname)/g; s/backup-server/$BACKUP_SERVER/g; s/backup-server-ip/$BACKUP_SERVER_IP/g; s/backup-server-port/$BACKUP_SERVER_PORT/g" "${SSH_DIR}/config"
+            sed -i "s/my-server-name/$(hostname)/g; s/backup-server-name/$BACKUP_SERVER/g; s/backup-server-ip/$BACKUP_SERVER_IP/g; s/backup-server-port/$BACKUP_SERVER_PORT/g" "${SSH_DIR}/config"
         fi
 
 

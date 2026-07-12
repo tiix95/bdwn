@@ -1,7 +1,7 @@
 # /var/lib/bdwn/.ssh/config - SSH configuration for the bdwn backup user.
 # Mode 0600, owner bdwn:bdwn. Referenced by BDWN_REPO (sftp:backup-remote:...).
 
-Host backup-server
+Host backup-server-name
     HostName backup-server-ip
     Port backup-server-port
     # SFTP user created by setup-backup-user.sh: named after this server

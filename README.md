@@ -9,7 +9,9 @@ runs the backup as root with a reduced capability set (so any path can be read),
 dropping privileges to the unprivileged `bdwn` user for the SSH/SFTP connection,
 made with a dedicated key. Retention (daily/weekly/monthly) is applied
 automatically after each run. ZFS pools/datasets/volumes can optionally be
-exported with `zfs send` and included in the backup.
+exported with `zfs send` and included in the backup. An optional companion
+package, `bdwn-libvirt`, adds cold backups of libvirt VMs into the same
+repository, see [Libvirt VM backup](#libvirt-vm-backup-bdwn-libvirt).
 
 ## Dependencies
 
@@ -24,10 +26,13 @@ Optional (declared as a suggestion, not installed automatically):
 
 - `zfsutils-linux` - only needed for [ZFS backup](#zfs-backup)
 
+The `bdwn-libvirt` companion package additionally depends on `libvirt-clients`,
+pulled in automatically when installing `bdwn-libvirt`.
+
 ## Build
 
 ```sh
-make deb      # build the package -> ./bdwn_<version>_all.deb
+make deb      # build both packages -> ./bdwn_<version>_all.deb and ./bdwn-libvirt_<version>_all.deb
 make help     # list available targets
 make clean    # remove build artifacts
 ```
@@ -112,6 +117,7 @@ use no spaces around `=`.
 | `BDWN_CACHE_DIR`    | no       | Restic cache directory. Defaults to `/var/cache/bdwn`.                                        |
 | `BDWN_ZFS_DATASETS` | no       | Space-separated ZFS pools/datasets/volumes to export and back up. See [ZFS backup](#zfs-backup). |
 | `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
+| `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` | no | Seconds to wait for a clean VM shutdown before aborting. Defaults to `300`. Only used by `bdwn-libvirt`. |
 
 Example:
 
@@ -161,6 +167,73 @@ To restore, fetch the dump from the repository, then feed it to `zfs receive`:
 bdwn restic restore latest --target /tmp/restore --include /var/backups/bdwn/zfs
 zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zfs
 ```
+
+## Libvirt VM backup (bdwn-libvirt)
+
+The `bdwn-libvirt` companion package (built from the same source, depends on
+`bdwn` at the same version and `libvirt-clients`) makes cold backups of
+libvirt VMs into the bdwn repository. Repository, passphrase and SSH privilege
+drop are all reused from the bdwn configuration.
+
+```sh
+apt install ./bdwn-libvirt_*.deb
+```
+
+For each VM, `/usr/bin/bdwn-libvirt <vm-name>` runs this sequence:
+
+1. Clean shutdown via `virsh shutdown`, waiting up to
+   `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` seconds (default 300). On timeout the
+   backup aborts and the VM is restarted.
+2. Cold external snapshot while the VM is off (`virsh snapshot-create-as
+   --disk-only --atomic --no-metadata`): qcow2 overlays, the base images
+   become stable.
+3. VM restart. Downtime is the shutdown plus the snapshot, nothing more.
+4. Export of the base disk images and the domain XML (dumped with
+   `--inactive --security-info` to `/var/backups/bdwn/libvirt`) through
+   `bdwn restic backup --tag libvirt-<vm>`.
+5. Overlays merged back live (`virsh blockcommit --active --pivot`), the
+   persistent domain definition restored (`virsh define` of the pre-snapshot
+   XML, since blockcommit only pivots the live config), overlay files removed.
+
+A VM that is already shut off is exported directly, with no snapshot or
+restart. If the script fails between the shutdown and the restart, a trap
+restarts the VM.
+
+The package ships template units `bdwn-libvirt@.service` (oneshot, hardened
+like `bdwn.service`, plus `ReadWritePaths` for `/var/lib/libvirt` and
+`/var/backups/bdwn`) and `bdwn-libvirt@.timer` (daily, persistent, one hour
+of randomized delay to spread the VM downtime windows). Nothing is enabled by
+the postinst; enable one instance per VM (the prerm stops and disables all
+enabled instances on removal):
+
+```sh
+systemctl enable --now bdwn-libvirt@myvm.timer
+```
+
+Or run a backup by hand as root:
+
+```sh
+bdwn-libvirt myvm
+```
+
+To restore, fetch the tagged snapshot, then define the VM and put the disk
+images back in place:
+
+```sh
+bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
+virsh define /tmp/restore/var/backups/bdwn/libvirt/myvm.xml
+```
+
+Retention: the keep policy of the main bdwn backup applies globally (restic
+forget groups by host and paths), so the VM snapshot groups are pruned by the
+daily bdwn run.
+
+Caveats:
+
+- Disk paths must not contain spaces.
+- Cdrom devices are skipped.
+- Works with file-backed disk images (qcow2/raw).
+- `virsh shutdown` needs ACPI or the qemu guest agent in the VM.
 
 ## SSH setup
 
@@ -236,7 +309,10 @@ See [server/README.md](server/README.md) for the full server-side procedure.
 | `/lib/systemd/system/bdwn.service`| Backup service (oneshot, hardened)               |
 | `/lib/systemd/system/bdwn.timer`  | Daily timer                                       |
 | `/usr/share/bdwn/*.example`       | Example config, SSH config and ZFS systemd drop-in |
-| `/var/backups/bdwn`               | ZFS dump area (`0700` root:root, created by postinst, removed on purge) |
+| `/var/backups/bdwn`               | ZFS dumps and libvirt XML staging (`0700` root:root, created by postinst, removed on purge) |
+| `/usr/bin/bdwn-libvirt`           | Libvirt VM backup script (bdwn-libvirt package)   |
+| `/lib/systemd/system/bdwn-libvirt@.service` | Per-VM backup service template (bdwn-libvirt package) |
+| `/lib/systemd/system/bdwn-libvirt@.timer`   | Per-VM daily timer template (bdwn-libvirt package) |
 
 ## Usage
 
@@ -287,6 +363,7 @@ bdwn restic restore latest --target /tmp/restore
 ## Uninstall
 
 ```sh
-apt remove bdwn     # stop and disable the timer, remove program files
-apt purge bdwn      # also remove the bdwn user, /etc/bdwn, /var/lib/bdwn, /var/cache/bdwn, /var/backups/bdwn
+apt remove bdwn-libvirt   # if installed: stop and disable all bdwn-libvirt@<vm> timers, remove the VM backup script and units (bdwn cannot be removed while bdwn-libvirt depends on it)
+apt remove bdwn           # stop and disable the timer, remove program files
+apt purge bdwn            # also remove the bdwn user, /etc/bdwn, /var/lib/bdwn, /var/cache/bdwn, /var/backups/bdwn
 ```
