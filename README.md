@@ -107,7 +107,7 @@ use no spaces around `=`.
 
 | Variable            | Required | Meaning                                                                                      |
 | ------------------- | -------- | -------------------------------------------------------------------------------------------- |
-| `BDWN_REPO`         | yes      | Restic repository. Form `sftp:<ssh-host>:/path`, where `<ssh-host>` is a `Host` entry in the SSH config. |
+| `BDWN_REPO`         | yes      | Restic repository. Either `sftp:<ssh-host>:/path`, where `<ssh-host>` is a `Host` entry in the SSH config, or an absolute local path, see [Local repository](#local-repository). |
 | `RESTIC_PASSWORD`   | yes      | Encryption passphrase for the repository. Keep it secret.                                    |
 | `BACKUP_PATHS`      | yes      | Space-separated directories/files to back up. Any path works (the service reads as root).    |
 | `BDWN_EXCLUDES`     | no       | Space-separated exclude patterns passed to restic.                                           |
@@ -130,6 +130,34 @@ BDWN_KEEP_DAILY="7"
 BDWN_KEEP_WEEKLY="4"
 BDWN_KEEP_MONTHLY="6"
 ```
+
+## Local repository
+
+`BDWN_REPO` can also be an absolute filesystem path, for a repository on a
+mounted disk or NFS share:
+
+```sh
+BDWN_REPO="/srv/backups/restic"
+```
+
+In this mode restic reads and writes the repository directly as root: no SSH
+config, key, known_hosts or backup server is needed. Skip the
+[SSH setup](#ssh-setup) and [Backup server setup](#backup-server-setup)
+sections entirely.
+
+The hardened `bdwn.service` mounts the filesystem read-only
+(`ProtectSystem=strict`, only `/var/lib/bdwn` and `/var/cache/bdwn` writable),
+so the repository path must be opened up with a systemd drop-in. The package
+ships an example:
+
+```sh
+install -d /etc/systemd/system/bdwn.service.d
+cp /usr/share/bdwn/local-repo-dropin.conf.example /etc/systemd/system/bdwn.service.d/local-repo.conf
+# edit ReadWritePaths in local-repo.conf to the parent directory of BDWN_REPO
+systemctl daemon-reload
+```
+
+Running `bdwn backup` by hand as root works without the drop-in.
 
 ## ZFS backup
 
@@ -278,6 +306,9 @@ rm /var/lib/libvirt/images/<disk>.bdwn
 ```
 
 ## SSH setup
+
+This section and [Backup server setup](#backup-server-setup) only apply to
+`sftp:` repositories; skip both for a [local repository](#local-repository).
 
 `BDWN_REPO` connects through a `Host` entry in `/var/lib/bdwn/.ssh/config`. To
 prepare the connection:

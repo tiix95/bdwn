@@ -1,5 +1,5 @@
 [Unit]
-Description=BackDown restic backup to SFTP repository
+Description=BackDown restic backup
 After=network-online.target
 Wants=network-online.target
 
@@ -18,6 +18,8 @@ CacheDirectory=bdwn
 ProtectSystem=strict
 # read-only so restic can read /home and /root while backing them up
 ProtectHome=read-only
+# A local repository (BDWN_REPO set to a path) needs its directory added
+# via a drop-in: see /usr/share/bdwn/local-repo-dropin.conf.example
 ReadWritePaths=/var/lib/bdwn /var/cache/bdwn
 PrivateTmp=yes
 PrivateDevices=yes

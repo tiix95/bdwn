@@ -1,5 +1,6 @@
 #!/bin/sh
-# bdwn - BackDown: encrypted server backups to an SFTP repository via restic.
+# bdwn - BackDown: encrypted server backups via restic, to an SFTP
+# repository or a local filesystem path.
 # Sources /etc/bdwn/bdwn.conf and drives restic. Meant to be run by the
 # systemd timer as the unprivileged 'bdwn' user, but usable by hand for
 # maintenance (snapshots, check, arbitrary restic commands).
