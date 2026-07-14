@@ -233,7 +233,49 @@ Caveats:
 - Disk paths must not contain spaces.
 - Cdrom devices are skipped.
 - Works with file-backed disk images (qcow2/raw).
-- `virsh shutdown` needs ACPI or the qemu guest agent in the VM.
+- `virsh shutdown` first tries the default mode (guest agent when a channel is
+  defined in the domain XML), then falls back to a plain ACPI power button
+  press if that call fails (e.g. a broken guest agent answering unparseable JSON).
+- The guest only strictly needs to handle ACPI power button events.
+
+### Troubleshooting
+
+**Symptom:** the export succeeds, then the overlay merge fails with:
+
+```
+error: internal error: unable to execute QEMU command 'block-commit': Could not open '<base image>': Permission denied
+```
+
+The backup itself succeeded and no data is at risk: the VM keeps running on
+its `.bdwn` overlay, the base image is intact underneath. The script refuses
+to run again for that VM until the overlay is merged back (stacking snapshots
+on an overlay would be worse).
+
+**Cause:** for block-commit, qemu (running unprivileged as `libvirt-qemu`)
+must reopen the base image read-write while it only had it read-only. On
+Debian the usual culprit is AppArmor: the generated per-VM profile grants
+only read on backing files. Check with `journalctl -k | grep -i denied`. Also
+check plain file ownership/mode with `ls -l /var/lib/libvirt/images/`.
+
+**Fix (AppArmor):** grant read-write in the local abstraction, included by
+every qemu profile:
+
+```sh
+echo '/var/lib/libvirt/images/** rwk,' >> /etc/apparmor.d/local/abstractions/libvirt-qemu
+systemctl reload apparmor
+```
+
+For a plain DAC problem: `chown libvirt-qemu:libvirt-qemu` and `chmod 0660`
+the base image.
+
+**Manual merge once fixed** (check the overlay name and target with
+`virsh domblklist <vm>`):
+
+```sh
+virsh blockcommit <vm> vda --active --pivot --wait
+virsh define /var/backups/bdwn/libvirt/<vm>.xml
+rm /var/lib/libvirt/images/<disk>.bdwn
+```
 
 ## SSH setup
 

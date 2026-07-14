@@ -45,6 +45,20 @@ BASE_DISKS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $
 DISK_TARGETS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $3}')
 [ -n "$BASE_DISKS" ] || die "no disk found for domain $VM"
 
+# A disk still pointing to a .bdwn overlay means a previous run failed after
+# the snapshot: backing up (and snapshotting) on top of it would stack
+# overlays, refuse and let the admin merge it back first.
+for disk in $BASE_DISKS; do
+    case "$disk" in
+    *."$SNAP_NAME")
+        die "leftover overlay from a failed run: $disk
+Merge it back before retrying (see README, libvirt troubleshooting):
+  virsh blockcommit $VM <target> --active --pivot --wait
+  virsh define /var/backups/bdwn/libvirt/$VM.xml
+  rm $disk" ;;
+    esac
+done
+
 # Persistent domain definition, dumped before the snapshot: it references the
 # base images (consistent with what is exported) and is used to restore the
 # persistent config after the blockcommit pivot.
@@ -58,7 +72,13 @@ if [ "$(virsh domstate "$VM")" = "running" ]; then
     WAS_RUNNING=1
 
     echo "bdwn-libvirt: shutting down $VM (timeout ${SHUTDOWN_TIMEOUT}s)"
-    virsh shutdown "$VM" >/dev/null
+    # Default mode goes through the guest agent when a channel is defined in
+    # the domain XML; a broken agent then fails the whole call (e.g. 'failed
+    # to parse JSON'), so fall back to a plain ACPI power button press.
+    if ! virsh shutdown "$VM" >/dev/null 2>&1; then
+        echo "bdwn-libvirt: default shutdown failed, falling back to ACPI"
+        virsh shutdown --mode acpi "$VM" >/dev/null
+    fi
     RESTART_ON_FAIL=1
     waited=0
     while [ "$(virsh domstate "$VM")" != "shut off" ]; do
@@ -93,7 +113,12 @@ if [ "$WAS_RUNNING" = 1 ]; then
     # config) and drop the overlay files.
     for target in $DISK_TARGETS; do
         echo "bdwn-libvirt: merging overlay of $target"
-        virsh blockcommit "$VM" "$target" --active --pivot --wait >/dev/null
+        virsh blockcommit "$VM" "$target" --active --pivot --wait >/dev/null \
+            || die "blockcommit failed for $target: the backup itself succeeded and $VM
+keeps running safely on its overlay. Usual cause on Debian: AppArmor denies
+qemu the read-write reopen of the base image (check 'journalctl -k | grep -i
+denied'). Fix the permission, then merge by hand (see README, libvirt
+troubleshooting)."
     done
     virsh define "$DOMAIN_XML" >/dev/null
     for overlay in $OVERLAYS; do
