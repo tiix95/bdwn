@@ -115,6 +115,7 @@ use no spaces around `=`.
 | `BDWN_KEEP_WEEKLY`  | no       | Weekly snapshots to keep.                                                                     |
 | `BDWN_KEEP_MONTHLY` | no       | Monthly snapshots to keep.                                                                    |
 | `BDWN_CACHE_DIR`    | no       | Restic cache directory. Defaults to `/var/cache/bdwn`.                                        |
+| `BDWN_RESTORE_DIR`  | no       | Default target directory for `bdwn restore`. Defaults to `/var/backups/bdwn/restore`.         |
 | `BDWN_ZFS_DATASETS` | no       | Space-separated ZFS pools/datasets/volumes to export and back up. See [ZFS backup](#zfs-backup). |
 | `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
 | `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` | no | Seconds to wait for a clean VM shutdown before aborting. Defaults to `300`. Only used by `bdwn-libvirt`. |
@@ -193,7 +194,7 @@ Running `bdwn backup` by hand as root works without the drop-in.
 To restore, fetch the dump from the repository, then feed it to `zfs receive`:
 
 ```sh
-bdwn restic restore latest --target /tmp/restore --include /var/backups/bdwn/zfs
+bdwn restore --target /tmp/restore /var/backups/bdwn/zfs
 zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zfs
 ```
 
@@ -265,11 +266,13 @@ Or run a backup by hand as root:
 bdwn-libvirt myvm
 ```
 
-To restore, fetch the tagged snapshot, then define the VM and put the disk
-images back in place:
+To restore, find the tagged snapshot, fetch it, then define the VM and put the
+disk images back in place. `bdwn restore` has no `--tag` option, so the
+snapshot is selected by the ID listed by `bdwn snapshots`:
 
 ```sh
-bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
+bdwn snapshots --tag libvirt-myvm             # pick the snapshot ID
+bdwn restore --snapshot 4a1b2c3d --target /tmp/restore
 virsh define /tmp/restore/var/backups/bdwn/libvirt/myvm.xml
 ```
 
@@ -438,7 +441,7 @@ See [server/README.md](server/README.md) for the full server-side procedure.
 | `/lib/systemd/system/bdwn.service`| Backup service (oneshot, hardened)               |
 | `/lib/systemd/system/bdwn.timer`  | Daily timer                                       |
 | `/usr/share/bdwn/*.example`       | Example config, SSH config and ZFS systemd drop-in |
-| `/var/backups/bdwn`               | ZFS dumps and libvirt XML staging (`0700` root:root, created by postinst, removed on purge) |
+| `/var/backups/bdwn`               | ZFS dumps, libvirt XML staging and the default `bdwn restore` target (`0700` root:root, created by postinst, removed on purge) |
 | `/usr/bin/bdwn-libvirt`           | Libvirt VM backup script (bdwn-libvirt package)   |
 | `/lib/systemd/system/bdwn-libvirt@.service` | Per-VM backup service template (bdwn-libvirt package) |
 | `/lib/systemd/system/bdwn-libvirt@.timer`   | Per-VM daily timer template (bdwn-libvirt package) |
@@ -461,14 +464,60 @@ Run commands by hand as root:
 ```sh
 bdwn backup          # run a backup + retention
 bdwn snapshots       # list snapshots
+bdwn list            # list the files held by a snapshot
+bdwn restore         # restore files out of a snapshot
 bdwn check           # verify repository integrity
 bdwn restic <args>   # arbitrary restic command
 ```
 
-Use `bdwn restic ...` for anything not wrapped, for example a restore:
+### Listing snapshot contents
+
+`bdwn list [snapshot-id] [path...]` wraps `restic ls --long`. The snapshot
+defaults to `latest`: it is inserted automatically when the first argument is
+missing, is a path (starts with `/`) or is an option (starts with `-`). Any
+other argument is handed to `restic ls`.
 
 ```sh
-bdwn restic restore latest --target /tmp/restore
+bdwn list                        # files of the latest snapshot
+bdwn list /etc/ssh               # descend into a subdirectory of the latest snapshot
+bdwn list 4a1b2c3d /var/www      # same, in a given snapshot
+bdwn list --tag libvirt-myvm     # latest snapshot carrying that tag
+```
+
+### Restoring
+
+`bdwn restore [--snapshot ID] [--target DIR] [path...]` wraps
+`restic restore`. `--snapshot` defaults to `latest` and `--target` to
+`BDWN_RESTORE_DIR` (itself `/var/backups/bdwn/restore` by default). Each
+positional path becomes a restic `--include` pattern, so naming a directory
+brings back everything below it; with no path the whole snapshot is restored.
+
+```sh
+bdwn restore                                        # whole latest snapshot into the default target
+bdwn restore /var/www                               # one directory, into the default target
+bdwn restore --target /tmp/restore /etc/ssh         # one directory, elsewhere
+bdwn restore --snapshot 4a1b2c3d /var/www           # from a given snapshot
+bdwn restore --target / /etc/ssh                    # restore in place, overwriting the live files
+```
+
+The target directory is created mode `0700` when missing, because restored
+files keep their original content. An existing directory is left untouched, so
+`--target /` does not alter the mode of `/`.
+
+Caveats:
+
+- Paths must not contain spaces (word-splitting, same limitation as
+  `BACKUP_PATHS`).
+- `--target /` overwrites live files. There is no dry run.
+- The default target lives under `/var/backups/bdwn`, which `apt purge bdwn`
+  removes. Move restored data out of it, or pass a `--target` outside that
+  tree.
+
+Use `bdwn restic ...` for anything not wrapped, for example selecting a
+snapshot by tag during a restore:
+
+```sh
+bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
 ```
 
 ## Security notes

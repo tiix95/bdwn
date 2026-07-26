@@ -3,7 +3,7 @@
 # repository or a local filesystem path.
 # Sources /etc/bdwn/bdwn.conf and drives restic. Meant to be run by the
 # systemd timer as the unprivileged 'bdwn' user, but usable by hand for
-# maintenance (snapshots, check, arbitrary restic commands).
+# maintenance (snapshots, list, restore, check, arbitrary restic commands).
 #
 # 'set -f' disables pathname expansion: BDWN_EXCLUDES holds restic glob
 # patterns (e.g. /home/*/.cache) that must reach restic literally, and we
@@ -127,11 +127,54 @@ cmd_backup() {
     fi
 }
 
+# List the files held by a snapshot ('latest' when none is given). Anything
+# else is handed to 'restic ls': paths to descend into, --host, --tag...
+cmd_list() {
+    # A first argument that is a path or an option is not a snapshot ID, so
+    # the default one is inserted before it.
+    case "${1:-}" in
+    '' | /* | -*) set -- latest "$@" ;;
+    esac
+    run_restic ls --long "$@"
+}
+
+# Restore files out of a snapshot. Paths are restic --include patterns, so a
+# directory brings back everything below it; with no path the whole snapshot
+# is restored. Paths must not contain spaces.
+cmd_restore() {
+    snapshot="latest"
+    target="${BDWN_RESTORE_DIR:-/var/backups/bdwn/restore}"
+    includes=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --snapshot) shift; [ $# -gt 0 ] || die "--snapshot needs a snapshot ID"; snapshot="$1" ;;
+        --target)   shift; [ $# -gt 0 ] || die "--target needs a directory"; target="$1" ;;
+        -*)         die "unknown restore option: $1 (use: --snapshot ID, --target DIR)" ;;
+        *)          includes="$includes --include=$1" ;;
+        esac
+        shift
+    done
+
+    # Restored files keep their original content, so the target is created
+    # root-only. An existing directory is left alone: '--target /' restores
+    # in place and must not see its mode changed.
+    if [ ! -d "$target" ]; then
+        mkdir -p "$target"
+        chmod 0700 "$target"
+    fi
+
+    echo "bdwn: restoring snapshot $snapshot into $target"
+    # shellcheck disable=SC2086
+    run_restic restore "$snapshot" --target "$target" $includes
+}
+
 case "${1:-backup}" in
     backup)    cmd_backup ;;
     init)      ensure_repo ;;
     snapshots) shift; run_restic snapshots "$@" ;;
+    list)      shift; cmd_list "$@" ;;
+    restore)   shift; cmd_restore "$@" ;;
     check)     shift; run_restic check "$@" ;;
     restic)    shift; run_restic "$@" ;;
-    *)         die "unknown command: $1 (use: backup|init|snapshots|check|restic)" ;;
+    *)         die "unknown command: $1 (use: backup|init|snapshots|list|restore|check|restic)" ;;
 esac
