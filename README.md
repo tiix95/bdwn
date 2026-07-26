@@ -26,8 +26,8 @@ Optional (declared as a suggestion, not installed automatically):
 
 - `zfsutils-linux` - only needed for [ZFS backup](#zfs-backup)
 
-The `bdwn-libvirt` companion package additionally depends on `libvirt-clients`,
-pulled in automatically when installing `bdwn-libvirt`.
+The `bdwn-libvirt` companion package additionally depends on `libvirt-clients`
+and `qemu-utils`, both pulled in automatically when installing `bdwn-libvirt`.
 
 ## Build
 
@@ -42,6 +42,20 @@ make clean    # remove build artifacts
 ```sh
 apt install ./bdwn_*.deb
 ```
+
+When `bdwn-libvirt` is installed, pass both packages to apt in the same command
+so they upgrade together:
+
+```sh
+apt install ./bdwn_*.deb ./bdwn-libvirt_*.deb
+```
+
+`bdwn-libvirt` depends on `bdwn` at its own version or newer. Upgrading `bdwn`
+alone is fine; upgrading `bdwn-libvirt` alone, or installing a `bdwn-libvirt`
+newer than the installed `bdwn`, is refused by apt. A `bdwn-libvirt` built
+before this dependency was relaxed still requires the exact same `bdwn`
+version, so the first upgrade past it must name both `.deb` files in one
+command.
 
 The package `postinst` performs first-install setup:
 
@@ -201,7 +215,7 @@ zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zf
 ## Libvirt VM backup (bdwn-libvirt)
 
 The `bdwn-libvirt` companion package (built from the same source, depends on
-`bdwn` at the same version, `libvirt-clients` and `qemu-utils`) makes cold
+`bdwn` at that version or newer, `libvirt-clients` and `qemu-utils`) makes cold
 backups of libvirt VMs into the bdwn repository. Repository, passphrase and SSH privilege
 drop are all reused from the bdwn configuration.
 

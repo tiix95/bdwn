@@ -21,7 +21,7 @@ Description: Encrypted server backups to an SFTP repository
 Package: bdwn-libvirt
 Architecture: all
 Depends: ${misc:Depends},
-         bdwn (= ${source:Version}),
+         bdwn (>= ${source:Version}),
          libvirt-clients,
          qemu-utils
 Description: Libvirt VM backups for BackDown
