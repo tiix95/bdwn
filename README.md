@@ -118,6 +118,7 @@ use no spaces around `=`.
 | `BDWN_ZFS_DATASETS` | no       | Space-separated ZFS pools/datasets/volumes to export and back up. See [ZFS backup](#zfs-backup). |
 | `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
 | `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` | no | Seconds to wait for a clean VM shutdown before aborting. Defaults to `300`. Only used by `bdwn-libvirt`. |
+| `BDWN_LIBVIRT_MERGE_MODE` | no | How the snapshot overlay is merged back: `auto` (default), `live` or `cold`. See [Merge modes](#merge-modes). Only used by `bdwn-libvirt`. |
 
 Example:
 
@@ -199,8 +200,8 @@ zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zf
 ## Libvirt VM backup (bdwn-libvirt)
 
 The `bdwn-libvirt` companion package (built from the same source, depends on
-`bdwn` at the same version and `libvirt-clients`) makes cold backups of
-libvirt VMs into the bdwn repository. Repository, passphrase and SSH privilege
+`bdwn` at the same version, `libvirt-clients` and `qemu-utils`) makes cold
+backups of libvirt VMs into the bdwn repository. Repository, passphrase and SSH privilege
 drop are all reused from the bdwn configuration.
 
 ```sh
@@ -219,13 +220,33 @@ For each VM, `/usr/bin/bdwn-libvirt <vm-name>` runs this sequence:
 4. Export of the base disk images and the domain XML (dumped with
    `--inactive --security-info` to `/var/backups/bdwn/libvirt`) through
    `bdwn restic backup --tag libvirt-<vm>`.
-5. Overlays merged back live (`virsh blockcommit --active --pivot`), the
-   persistent domain definition restored (`virsh define` of the pre-snapshot
-   XML, since blockcommit only pivots the live config), overlay files removed.
+5. Overlays merged back into the base images, according to
+   `BDWN_LIBVIRT_MERGE_MODE` (see below). The persistent domain definition is
+   then restored (`virsh define` of the pre-snapshot XML) and the overlay
+   files removed.
 
 A VM that is already shut off is exported directly, with no snapshot or
 restart. If the script fails between the shutdown and the restart, a trap
 restarts the VM.
+
+### Merge modes
+
+Merging the overlay back can be done live or with the VM stopped. Live is
+free but needs qemu to reopen the base image read-write, which AppArmor
+denies on most Debian hosts (see [Troubleshooting](#troubleshooting)).
+`BDWN_LIBVIRT_MERGE_MODE` picks the strategy:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | `virsh blockcommit --active --pivot`, falling back to a cold merge if it is refused. |
+| `live` | Live merge only. The run fails if it is refused, leaving the VM up on its overlay. |
+| `cold` | Cold merge only: stop the VM, `qemu-img commit` each overlay, restart the VM. |
+
+The cold merge runs as root, outside the per-VM AppArmor profile, so it always
+works. It costs a second downtime, short because an overlay only holds the
+writes made since the snapshot. Set `cold` on a host where the live merge is
+known to be denied: `auto` works there too, but wastes a failed attempt and
+logs an error on every run.
 
 The package ships template units `bdwn-libvirt@.service` (oneshot, hardened
 like `bdwn.service`, plus `ReadWritePaths` for `/var/lib/libvirt` and
@@ -268,40 +289,75 @@ Caveats:
 
 ### Troubleshooting
 
-**Symptom:** the export succeeds, then the overlay merge fails with:
+**Symptom:** the export succeeds, then the live merge is refused with:
 
 ```
 error: internal error: unable to execute QEMU command 'block-commit': Could not open '<base image>': Permission denied
 ```
 
-The backup itself succeeded and no data is at risk: the VM keeps running on
-its `.bdwn` overlay, the base image is intact underneath. The script refuses
-to run again for that VM until the overlay is merged back (stacking snapshots
-on an overlay would be worse).
+With the default `auto` mode this is only a warning: the script logs
+`live merge refused, falling back to a cold merge` and finishes the job with
+the VM briefly stopped. In `live` mode the run fails there, and the VM keeps
+running on its `.bdwn` overlay with the base image intact underneath. No data
+is at risk either way.
 
 **Cause:** for block-commit, qemu (running unprivileged as `libvirt-qemu`)
 must reopen the base image read-write while it only had it read-only. On
-Debian the usual culprit is AppArmor: the generated per-VM profile grants
-only read on backing files. Check with `journalctl -k | grep -i denied`. Also
-check plain file ownership/mode with `ls -l /var/lib/libvirt/images/`.
-
-**Fix (AppArmor):** grant read-write in the local abstraction, included by
-every qemu profile:
+Debian, `virt-aa-helper` regenerates the per-VM AppArmor profile at every
+domain start and writes an explicit deny for each read-only backing file:
 
 ```sh
-echo '/var/lib/libvirt/images/** rwk,' >> /etc/apparmor.d/local/abstractions/libvirt-qemu
-systemctl reload apparmor
+grep -B1 deny /etc/apparmor.d/libvirt/libvirt-$(virsh domuuid <vm>).files
+  # don't audit writes to readonly files
+  deny "/var/lib/libvirt/images/<disk>.qcow2" w,
 ```
 
-For a plain DAC problem: `chown libvirt-qemu:libvirt-qemu` and `chmod 0660`
-the base image.
+The rule exists to silence audit noise, but an AppArmor `deny` is a hard
+refusal that **no allow rule can override**. Adding permissions to
+`/etc/apparmor.d/local/abstractions/libvirt-qemu` therefore has no effect,
+and the file is rewritten at the next VM start anyway. The only durable ways
+to lift it are host-wide: `security_driver = "none"` in
+`/etc/libvirt/qemu.conf`, or a `complain` flag in
+`/etc/apparmor.d/libvirt/TEMPLATE.qemu`. Both drop the confinement of every
+VM on the host.
 
-**Manual merge once fixed** (check the overlay name and target with
-`virsh domblklist <vm>`):
+**Fix:** keep the confinement and use `BDWN_LIBVIRT_MERGE_MODE="cold"`, which
+merges with `qemu-img` as root, outside the profile. Prefer it over `auto` on
+such a host to avoid a failed attempt on every run.
+
+If instead the denial is a plain permission problem (no `DENIED` line in
+`journalctl -k`, base image not owned by `libvirt-qemu` in
+`ls -l /var/lib/libvirt/images/`), fix it with `chown
+libvirt-qemu:libvirt-qemu` and `chmod 0660` on the base image.
+
+**Manual merge** in `live` mode, once the VM is stuck on its overlay (check
+the overlay name with `virsh domblklist <vm>`):
 
 ```sh
-virsh blockcommit <vm> vda --active --pivot --wait
+virsh shutdown <vm>          # wait for 'shut off'
+qemu-img commit /var/lib/libvirt/images/<disk>.bdwn
 virsh define /var/backups/bdwn/libvirt/<vm>.xml
+rm /var/lib/libvirt/images/<disk>.bdwn
+virsh start <vm>
+```
+
+**Symptom:** the run aborts before the shutdown with:
+
+```
+bdwn-libvirt: orphaned overlay file from a previous run: /var/lib/libvirt/images/<disk>.bdwn
+```
+
+**Cause:** the VM runs on its base image (the overlay was merged back by hand,
+or the merge step never removed it), but the overlay file is still on disk.
+`virsh snapshot-create-as` refuses to overwrite an existing file, so the
+script checks for it up front rather than shutting the VM down for nothing.
+
+**Fix:** the overlay is stale, everything the guest wrote since the merge went
+to the base image and merging it back now would corrupt the disk. Inspect it,
+then delete it:
+
+```sh
+qemu-img info /var/lib/libvirt/images/<disk>.bdwn
 rm /var/lib/libvirt/images/<disk>.bdwn
 ```
 

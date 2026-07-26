@@ -16,7 +16,8 @@ CacheDirectory=bdwn
 # Filesystem
 ProtectSystem=strict
 ProtectHome=read-only
-# /var/lib/libvirt: overlay files removed after the blockcommit pivot
+# /var/lib/libvirt: base images written by the cold merge, overlay files
+# removed once merged
 # /var/backups/bdwn: staging area for the domain XML dumps
 ReadWritePaths=/var/lib/bdwn /var/cache/bdwn /var/lib/libvirt /var/backups/bdwn
 PrivateTmp=yes
@@ -30,10 +31,13 @@ ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
 
-# Privileges: same reduced set as bdwn.service (virsh is only an RPC client
-# on the libvirt unix socket, the heavy lifting is done by libvirtd/qemu)
+# Privileges: virsh is only an RPC client on the libvirt unix socket, the
+# heavy lifting is done by libvirtd/qemu. CAP_DAC_OVERRIDE is needed by the
+# cold merge only: 'qemu-img commit' writes the base image and the overlay,
+# both owned by libvirt-qemu and not group/world writable, so being root is
+# not enough by itself.
 NoNewPrivileges=yes
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID CAP_KILL
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_KILL
 
 # Syscalls
 SystemCallArchitectures=native

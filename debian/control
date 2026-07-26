@@ -22,10 +22,13 @@ Package: bdwn-libvirt
 Architecture: all
 Depends: ${misc:Depends},
          bdwn (= ${source:Version}),
-         libvirt-clients
+         libvirt-clients,
+         qemu-utils
 Description: Libvirt VM backups for BackDown
  Cold backups of libvirt virtual machines into the bdwn restic repository:
  clean shutdown, cold external snapshot, VM restart, then export of the
  stable base images and domain XML while the VM runs on the overlays.
+ The overlays are then merged back, live when the host allows it, otherwise
+ with the VM briefly stopped (qemu-img).
  A systemd timer template is provided, enable one instance per VM:
  systemctl enable --now bdwn-libvirt@<vm-name>.timer
