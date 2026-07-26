@@ -6,4 +6,10 @@ debian/changelog
 debian/files
 debian/.debhelper/
 debian/bdwn/
+debian/bdwn-libvirt/
 debian/debhelper-build-stamp
+debian/bdwn.postrm.debhelper
+debian/*.substvars
+
+# Local tooling
+.claude/settings.local.json
