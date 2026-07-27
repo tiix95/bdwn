@@ -9,7 +9,9 @@ case "$1" in
     purge)
         # Remove data, config and cache
         rm -rf "${DATA_DIR}"
-        rm -rf /etc/bdwn
+        # Only this package's config: /etc/bdwn is shared with bdwn-server
+        rm -f /etc/bdwn/bdwn.conf
+        rmdir --ignore-fail-on-non-empty /etc/bdwn 2> /dev/null || true
         rm -rf /var/cache/bdwn
         rm -rf /var/backups/bdwn
 

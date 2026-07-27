@@ -1,0 +1,60 @@
+#!/bin/sh
+set -e
+
+CONFIG_DIR="/etc/bdwn"
+CONFIG_FILE="${CONFIG_DIR}/bdwn-export.conf"
+# Default jail of bdwn-setup-backup-user, only used for the message below
+CHROOT_BASE="/backups/servers"
+
+case "$1" in
+    configure)
+        # Config dir and file: root-only. Shared with the bdwn client package
+        # when both are installed on the same machine.
+        install -d -o root -g root -m 0700 "${CONFIG_DIR}"
+
+        # Seed the config from the example on first install only
+        if [ ! -e "${CONFIG_FILE}" ]; then
+            cp /usr/share/bdwn-server/bdwn-export.conf.example "${CONFIG_FILE}"
+        fi
+        chown root:root "${CONFIG_FILE}"
+        chmod 0600 "${CONFIG_FILE}"
+
+        # Reload units so systemd sees bdwn-export.timer / bdwn-export.service.
+        # The timer is NOT enabled automatically: it only makes sense when the
+        # external device stays plugged in.
+        systemctl daemon-reload
+
+        echo ""
+        echo "bdwn-server installed. Next steps:"
+        echo "  1. Check that /etc/ssh/sshd_config keeps the Debian default line:"
+        echo "       Include /etc/ssh/sshd_config.d/*.conf"
+        echo "     Without it the backup users cannot log in. The drop-in written"
+        echo "     by step 2 is shown for review in:"
+        echo "       /usr/share/bdwn-server/sshd_bdwn-backup.conf.example"
+        echo "  2. Declare a backup client, once per client server:"
+        echo "       bdwn-setup-backup-user <server-name> <public-key-file|inline-key>"
+        echo "     It creates the SFTP-only user, its repository in"
+        echo "     ${CHROOT_BASE}/<server-name>, the sshd drop-in, and prints the"
+        echo "     BDWN_REPO value to set on the client."
+        echo "  3. Let the clients reach sshd, for example with the nftables rule:"
+        echo "       iifname <interface> tcp dport <sshd-port> ct state new counter accept comment \"bdwn-backup\""
+        echo "  4. Optional, offline copy on an external device:"
+        echo "       mount /dev/sdX1 /mnt/usb && bdwn-export --target /mnt/usb"
+        echo "     or set BDWN_EXPORT_UUID in ${CONFIG_FILE} and run 'bdwn-export'"
+        echo "     (it mounts and unmounts the device itself)."
+        echo "  5. Only if the device stays plugged in, for a weekly export:"
+        echo "       systemctl enable --now bdwn-export.timer"
+        echo ""
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument: $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

@@ -19,6 +19,21 @@ Description: Encrypted server backups to an SFTP repository
  systemd timer running as an unprivileged system user. Configuration lives
  in /etc/bdwn/bdwn.conf and the SSH connection in /var/lib/bdwn/.ssh/config.
 
+Package: bdwn-server
+Architecture: all
+Depends: ${misc:Depends},
+         openssh-server,
+         openssh-client,
+         rsync,
+         adduser
+Description: Backup server side of BackDown
+ Repository server tooling for BackDown: bdwn-setup-backup-user locks down one
+ SFTP-only, chrooted system user per backup client, each with its own restic
+ repository under /backups/servers, and bdwn-export mirrors those repositories
+ onto an external device with rsync, for an offline copy kept out of the
+ building. The export needs no passphrase, since the server never holds them.
+ A weekly timer is provided for a permanently attached device.
+
 Package: bdwn-libvirt
 Architecture: all
 Depends: ${misc:Depends},

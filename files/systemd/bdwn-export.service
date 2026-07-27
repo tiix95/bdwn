@@ -1,0 +1,33 @@
+[Unit]
+Description=BackDown export of the server repositories to an external device
+# Purely local: no repository is fetched over the network here.
+
+[Service]
+Type=oneshot
+# No argument: the device comes from BDWN_EXPORT_UUID in
+# /etc/bdwn/bdwn-export.conf, and every repository under the jail is mirrored.
+ExecStart=/usr/bin/bdwn-export
+
+# Mounting the external device needs the @mount syscalls and a writable mount
+# point, so this unit is deliberately less sandboxed than bdwn.service:
+# no ProtectSystem, no SystemCallFilter. ProtectHome=yes still gives it a
+# private mount namespace, so the mount stays inside the unit and is torn down
+# with it even if bdwn-export is killed.
+ProtectHome=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+KeyringMode=private

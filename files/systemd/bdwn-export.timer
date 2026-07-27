@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly BackDown export to an external device
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

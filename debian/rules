@@ -20,6 +20,15 @@ override_dh_auto_install:
 	install -d debian/bdwn/lib/systemd/system
 	install -m 0644 files/systemd/bdwn.service debian/bdwn/lib/systemd/system/bdwn.service
 	install -m 0644 files/systemd/bdwn.timer debian/bdwn/lib/systemd/system/bdwn.timer
+	install -d debian/bdwn-server/usr/bin
+	install -m 0755 server/setup-backup-user.sh debian/bdwn-server/usr/bin/bdwn-setup-backup-user
+	install -m 0755 server/bdwn-export.sh debian/bdwn-server/usr/bin/bdwn-export
+	install -d debian/bdwn-server/usr/share/bdwn-server
+	install -m 0640 examples/bdwn-export.conf debian/bdwn-server/usr/share/bdwn-server/bdwn-export.conf.example
+	install -m 0644 server/sshd_bdwn-backup.conf debian/bdwn-server/usr/share/bdwn-server/sshd_bdwn-backup.conf.example
+	install -d debian/bdwn-server/lib/systemd/system
+	install -m 0644 files/systemd/bdwn-export.service debian/bdwn-server/lib/systemd/system/bdwn-export.service
+	install -m 0644 files/systemd/bdwn-export.timer debian/bdwn-server/lib/systemd/system/bdwn-export.timer
 	install -d debian/bdwn-libvirt/usr/bin
 	install -m 0755 src/bdwn-libvirt.sh debian/bdwn-libvirt/usr/bin/bdwn-libvirt
 	install -d debian/bdwn-libvirt/lib/systemd/system

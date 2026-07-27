@@ -15,6 +15,10 @@ mirrored onto an external disk with `bdwn export`, see
 package, `bdwn-libvirt`, adds cold backups of libvirt VMs into the same
 repository, see [Libvirt VM backup](#libvirt-vm-backup-bdwn-libvirt).
 
+This README documents the **client** side. The repository server side ships as
+a separate package, `bdwn-server`, documented in
+[server/README.md](server/README.md).
+
 ## Dependencies
 
 All are standard Debian packages, declared in `debian/control` and pulled in
@@ -31,20 +35,39 @@ Optional (declared as a suggestion, not installed automatically):
 
 The `bdwn-libvirt` companion package additionally depends on `libvirt-clients`
 and `qemu-utils`, both pulled in automatically when installing `bdwn-libvirt`.
+The `bdwn-server` package depends on `openssh-server`, `openssh-client`,
+`rsync` and `adduser`, and not on `bdwn`.
 
 ## Build
 
+One source tree, three binary packages:
+
 ```sh
-make deb      # build both packages -> ./bdwn_<version>_all.deb and ./bdwn-libvirt_<version>_all.deb
+make deb      # build all three packages, see below
 make help     # list available targets
 make clean    # remove build artifacts
 ```
+
+| Package        | Installed on   | Contents                                                                 |
+| -------------- | -------------- | ------------------------------------------------------------------------ |
+| `bdwn`         | backup client  | `bdwn` CLI, `bdwn.service`, `bdwn.timer`, examples                        |
+| `bdwn-libvirt` | backup client  | `bdwn-libvirt` plus the per-VM unit templates. Depends on `bdwn`.         |
+| `bdwn-server`  | backup server  | `bdwn-setup-backup-user`, `bdwn-export`, `bdwn-export.service`/`.timer`. Independent of `bdwn`. |
+
+Output files are `./bdwn_<version>_all.deb`,
+`./bdwn-libvirt_<version>_all.deb` and `./bdwn-server_<version>_all.deb`.
 
 ## Install
 
 ```sh
 apt install ./bdwn_*.deb
 ```
+
+`bdwn-server` is installed on the **backup server**, not on the client, and is
+independent of `bdwn`: a backup server need not be a backup client. It ships
+`bdwn-setup-backup-user` (one SFTP-only chrooted user and restic repository
+per client) and `bdwn-export` (mirror of the server repositories onto an
+external device). See [server/README.md](server/README.md).
 
 When `bdwn-libvirt` is installed, pass both packages to apt in the same command
 so they upgrade together:
@@ -448,7 +471,7 @@ prepare the connection:
    ```
 
 2. Edit `/var/lib/bdwn/.ssh/config` to match your remote host. `User` is the
-   server name passed to `setup-backup-user.sh` (e.g. `myserver`):
+   server name passed to `bdwn-setup-backup-user` (e.g. `myserver`):
 
    ```sshconfig
    Host backup-remote
@@ -474,19 +497,22 @@ The remote SFTP account must have the matching public key in its
 ## Backup server setup
 
 The remote account that receives the backups should be locked down to SFTP
-only. The `server/` directory ships `setup-backup-user.sh`, which creates a
-system user per client server, named after it, chrooted to the shared
-`/backups/servers` jail with no shell, no command execution and no forwarding:
-it can only read/write its own restic repository over SFTP. Run it as root on
-the backup server, once per client, with the server name and the client public
-key:
+only. The `bdwn-server` package provides `bdwn-setup-backup-user`, which
+creates a system user per client server, named after it, chrooted to the
+shared `/backups/servers` jail with no shell, no command execution and no
+forwarding: it can only read/write its own restic repository over SFTP. Run it
+as root on the backup server, once per client, with the server name and the
+client public key:
 
 ```sh
-./setup-backup-user.sh myserver id_ed25519.pub
+apt install ./bdwn-server_*.deb        # on the backup server
+bdwn-setup-backup-user myserver id_ed25519.pub
 ```
 
 The public key can also be passed inline instead of a file path, e.g.
-`./setup-backup-user.sh myserver "ssh-ed25519 AAAA... root@myserver"`.
+`bdwn-setup-backup-user myserver "ssh-ed25519 AAAA... root@myserver"`. Without
+the package, the same script runs from the source tree as
+`./server/setup-backup-user.sh`.
 
 Because of the shared chroot, the repository path the client sees is
 `/<SERVER_NAME>` (its private dir inside the jail), regardless of where it
@@ -496,9 +522,15 @@ lives on the backup server. With this setup, use:
 BDWN_REPO="sftp:backup-remote:/$(hostname)"
 ```
 
-See [server/README.md](server/README.md) for the full server-side procedure.
+The same package also ships `bdwn-export`, which mirrors every client
+repository held by the backup server onto an external device with rsync, with
+no passphrase involved. See [server/README.md](server/README.md) for the full
+server-side procedure, the `bdwn-server` package contents and the export.
 
 ## Layout on the target system
+
+Client machine (`bdwn` and `bdwn-libvirt`). The files installed on the backup
+server by `bdwn-server` are listed in [server/README.md](server/README.md).
 
 | Path                              | Purpose                                          |
 | --------------------------------- | ------------------------------------------------ |
