@@ -10,6 +10,7 @@ Architecture: all
 Depends: ${misc:Depends},
          restic,
          openssh-client,
+         rsync,
          adduser
 Suggests: zfsutils-linux
 Description: Encrypted server backups to an SFTP repository

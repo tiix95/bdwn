@@ -9,7 +9,9 @@ runs the backup as root with a reduced capability set (so any path can be read),
 dropping privileges to the unprivileged `bdwn` user for the SSH/SFTP connection,
 made with a dedicated key. Retention (daily/weekly/monthly) is applied
 automatically after each run. ZFS pools/datasets/volumes can optionally be
-exported with `zfs send` and included in the backup. An optional companion
+exported with `zfs send` and included in the backup. A local repository can be
+mirrored onto an external disk with `bdwn export`, see
+[Export to an external device](#export-to-an-external-device). An optional companion
 package, `bdwn-libvirt`, adds cold backups of libvirt VMs into the same
 repository, see [Libvirt VM backup](#libvirt-vm-backup-bdwn-libvirt).
 
@@ -20,6 +22,7 @@ automatically on install:
 
 - `restic` - backup engine
 - `openssh-client` - SSH/SFTP transport
+- `rsync` - mirrors a local repository in `bdwn export`
 - `adduser` - creates the `bdwn` system user
 
 Optional (declared as a suggestion, not installed automatically):
@@ -130,6 +133,9 @@ use no spaces around `=`.
 | `BDWN_KEEP_MONTHLY` | no       | Monthly snapshots to keep.                                                                    |
 | `BDWN_CACHE_DIR`    | no       | Restic cache directory. Defaults to `/var/cache/bdwn`.                                        |
 | `BDWN_RESTORE_DIR`  | no       | Default target directory for `bdwn restore`. Defaults to `/var/backups/bdwn/restore`.         |
+| `BDWN_EXPORT_UUID`  | no       | Filesystem UUID of the external device receiving the mirror. Unset by default; required only when `bdwn export` is called with no argument. See [Export to an external device](#export-to-an-external-device). |
+| `BDWN_EXPORT_MOUNT` | no       | Mount point used for `BDWN_EXPORT_UUID`. Defaults to `/mnt/bdwn-export`.                      |
+| `BDWN_EXPORT_SUBDIR`| no       | Directory created on the device to hold the mirror. Defaults to `bdwn-repo`.                  |
 | `BDWN_ZFS_DATASETS` | no       | Space-separated ZFS pools/datasets/volumes to export and back up. See [ZFS backup](#zfs-backup). |
 | `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
 | `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` | no | Seconds to wait for a clean VM shutdown before aborting. Defaults to `300`. Only used by `bdwn-libvirt`. |
@@ -174,6 +180,54 @@ systemctl daemon-reload
 ```
 
 Running `bdwn backup` by hand as root works without the drop-in.
+
+## Export to an external device
+
+`bdwn export [DIRECTORY]` mirrors a **local** repository onto an external disk
+with `rsync -a --delete --stats`, into the `BDWN_EXPORT_SUBDIR` directory of
+the device (created `0700`). The copy is byte-for-byte the same restic
+repository: same passphrase, objects deleted by retention removed, and later
+exports only transfer the delta. After the copy bdwn runs `sync`, checks the
+result with `restic -r <dest> cat config` and prints the restore command.
+
+Runs as root only (it may mount a device and reads the whole repository).
+There is no export from an `sftp:` repository: bdwn refuses it.
+
+With a directory argument, you mount and unmount the disk yourself. The
+directory must already be a mount point, otherwise bdwn refuses to run (guard
+against mirroring onto the root filesystem):
+
+```sh
+mount /dev/sdb1 /mnt/usb
+bdwn export /mnt/usb           # mirror into /mnt/usb/bdwn-repo
+umount /mnt/usb
+```
+
+With `BDWN_EXPORT_UUID` set, bdwn mounts and unmounts the device itself,
+including when the export fails. A mount point already mounted is left mounted:
+
+```sh
+lsblk -o NAME,SIZE,FSTYPE,UUID          # find the UUID of the external disk
+
+cat >> /etc/bdwn/bdwn.conf <<'EOF'
+BDWN_EXPORT_UUID="1234abcd-56ef-78ab-90cd-1234567890ab"
+BDWN_EXPORT_MOUNT="/mnt/bdwn-export"
+BDWN_EXPORT_SUBDIR="bdwn-repo"
+EOF
+
+bdwn export                             # mount, mirror, unmount
+```
+
+The copy is a standalone repository: restore from it on any machine with
+restic, no bdwn needed (restic prompts for the passphrase):
+
+```sh
+restic -r /mnt/usb/bdwn-repo restore latest --target /tmp/restore
+```
+
+Caveat: `bdwn export` is a manual command only. The hardened `bdwn.service`
+cannot run it (`SystemCallFilter` blocks `@mount` and `ProtectSystem=strict`
+leaves the device read-only), so no timer or drop-in is provided for it.
 
 ## ZFS backup
 
@@ -480,8 +534,16 @@ bdwn backup          # run a backup + retention
 bdwn snapshots       # list snapshots
 bdwn list            # list the files held by a snapshot
 bdwn restore         # restore files out of a snapshot
+bdwn export          # mirror a local repository onto an external device
 bdwn check           # verify repository integrity
 bdwn restic <args>   # arbitrary restic command
+```
+
+`bdwn export [DIRECTORY]` needs a local `BDWN_REPO` and an external device, see
+[Export to an external device](#export-to-an-external-device):
+
+```sh
+bdwn export /mnt/usb     # or plain 'bdwn export' with BDWN_EXPORT_UUID set
 ```
 
 ### Listing snapshot contents

@@ -168,13 +168,58 @@ cmd_restore() {
     run_restic restore "$snapshot" --target "$target" $includes
 }
 
+# Mirror a local repository onto an external device with rsync: the copy is a
+# byte-for-byte repository, readable with the same passphrase and usable as-is
+# with 'restic -r <device>/<subdir>'. Only local repositories can be mirrored.
+# The device is either an already mounted directory given as argument, or the
+# BDWN_EXPORT_UUID filesystem, which is then mounted and unmounted by bdwn.
+cmd_export() {
+    [ "$(id -u)" = "0" ] || die "export needs root (mount and full read of the repository)"
+    case "$BDWN_REPO" in
+    sftp:*) die "export mirrors a local repository, but BDWN_REPO is remote: $BDWN_REPO" ;;
+    esac
+    [ -d "$BDWN_REPO" ] || die "local repository not found: $BDWN_REPO"
+
+    target="${1:-}"
+    if [ -z "$target" ]; then
+        : "${BDWN_EXPORT_UUID:?no target directory given and BDWN_EXPORT_UUID not set in $CONFIG_FILE}"
+        device="/dev/disk/by-uuid/$BDWN_EXPORT_UUID"
+        [ -b "$device" ] || die "external device not found: $device (is it plugged in?)"
+        target="${BDWN_EXPORT_MOUNT:-/mnt/bdwn-export}"
+        mkdir -p "$target"
+        if ! mountpoint -q "$target"; then
+            echo "bdwn: mounting $device on $target"
+            mount "$device" "$target"
+            # Unmount whatever the outcome, including when die() aborts below.
+            trap 'echo "bdwn: unmounting $target"; umount "$target"' EXIT INT TERM
+        fi
+    fi
+
+    # Guards against mirroring onto the root filesystem when the device failed
+    # to mount or the given path is a plain directory.
+    mountpoint -q "$target" || die "$target is not a mount point, refusing to export outside an external device"
+
+    dest="$target/${BDWN_EXPORT_SUBDIR:-bdwn-repo}"
+    mkdir -p "$dest"
+    chmod 0700 "$dest"
+
+    echo "bdwn: mirroring $BDWN_REPO to $dest"
+    rsync -a --delete --stats "$BDWN_REPO/" "$dest/"
+    sync
+
+    # Cheap sanity check: an unreadable config means the copy is unusable.
+    restic -r "$dest" cat config >/dev/null || die "exported repository is unreadable: $dest"
+    echo "bdwn: export complete, restore with: restic -r $dest restore latest --target DIR"
+}
+
 case "${1:-backup}" in
     backup)    cmd_backup ;;
     init)      ensure_repo ;;
     snapshots) shift; run_restic snapshots "$@" ;;
     list)      shift; cmd_list "$@" ;;
     restore)   shift; cmd_restore "$@" ;;
+    export)    shift; cmd_export "$@" ;;
     check)     shift; run_restic check "$@" ;;
     restic)    shift; run_restic "$@" ;;
-    *)         die "unknown command: $1 (use: backup|init|snapshots|list|restore|check|restic)" ;;
+    *)         die "unknown command: $1 (use: backup|init|snapshots|list|restore|export|check|restic)" ;;
 esac
