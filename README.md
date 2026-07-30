@@ -319,7 +319,9 @@ For each VM, `/usr/bin/bdwn-libvirt <vm-name>` runs this sequence:
 
 A VM that is already shut off is exported directly, with no snapshot or
 restart. If the script fails between the shutdown and the restart, a trap
-restarts the VM.
+restarts the VM. A run that dies between the snapshot and the merge leaves the
+VM on its overlay: `bdwn-libvirt repair <vm-name>` cleans that up, see
+[Repairing after a failed run](#repairing-after-a-failed-run).
 
 ### Merge modes
 
@@ -351,10 +353,11 @@ enabled instances on removal):
 systemctl enable --now bdwn-libvirt@myvm.timer
 ```
 
-Or run a backup by hand as root:
+Or run it by hand as root:
 
 ```sh
-bdwn-libvirt myvm
+bdwn-libvirt myvm            # back up the VM
+bdwn-libvirt repair myvm     # merge back the overlays left by a failed run
 ```
 
 To restore, find the tagged snapshot, fetch it, then define the VM and put the
@@ -380,6 +383,35 @@ Caveats:
   defined in the domain XML), then falls back to a plain ACPI power button
   press if that call fails (e.g. a broken guest agent answering unparseable JSON).
 - The guest only strictly needs to handle ACPI power button events.
+
+### Repairing after a failed run
+
+If a run dies between the snapshot and the merge (host reboot, killed job,
+`live` merge refused), the VM keeps running on its `.bdwn` overlay and the next
+backup aborts rather than stacking a second overlay on top.
+`bdwn-libvirt repair <vm-name>` puts the VM back on its base images:
+
+```sh
+bdwn-libvirt repair myvm
+```
+
+It lists the domain disks, shuts the VM down if it is running
+(`BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` applies), runs `qemu-img commit` on each
+leftover overlay, redefines the domain from the pre-snapshot XML, removes the
+overlay files, and restarts the VM only if it was running before. It is
+idempotent: running it twice, or on a healthy VM, is a no-op that prints
+`myvm already runs on its base images, nothing to repair`.
+
+Requirements and limits:
+
+- The pre-snapshot definition `/var/backups/bdwn/libvirt/<vm>.xml` must exist.
+  Every backup run writes it; without it the repair refuses, since nothing can
+  point the domain back at its base images.
+- A stale overlay file sitting next to a base image, while the domain already
+  uses that base image, is **not** merged: the guest has been writing to the
+  base since, so committing the overlay would corrupt the disk. The repair
+  reports the file with the `qemu-img info` and `rm` commands to run, and
+  stops. Deleting it stays a manual decision.
 
 ### Troubleshooting
 
@@ -424,16 +456,30 @@ If instead the denial is a plain permission problem (no `DENIED` line in
 `ls -l /var/lib/libvirt/images/`), fix it with `chown
 libvirt-qemu:libvirt-qemu` and `chmod 0660` on the base image.
 
-**Manual merge** in `live` mode, once the VM is stuck on its overlay (check
-the overlay name with `virsh domblklist <vm>`):
+**Merging back** in `live` mode, once the VM is stuck on its overlay (the
+failure message points at the same command):
 
 ```sh
-virsh shutdown <vm>          # wait for 'shut off'
-qemu-img commit /var/lib/libvirt/images/<disk>.bdwn
-virsh define /var/backups/bdwn/libvirt/<vm>.xml
-rm /var/lib/libvirt/images/<disk>.bdwn
-virsh start <vm>
+bdwn-libvirt repair <vm>
 ```
+
+Under the hood it stops the VM, `qemu-img commit`s each `.bdwn` overlay,
+redefines the domain from `/var/backups/bdwn/libvirt/<vm>.xml`, removes the
+overlay files and restarts the VM. See
+[Repairing after a failed run](#repairing-after-a-failed-run).
+
+**Symptom:** a backup aborts immediately with:
+
+```
+bdwn-libvirt: leftover overlay from a failed run: /var/lib/libvirt/images/<disk>.bdwn
+Merge it back before retrying:
+  bdwn-libvirt repair <vm>
+```
+
+**Cause:** a previous run died after the snapshot, so the domain still points
+at the overlay. Snapshotting again would stack a second overlay on top.
+
+**Fix:** run `bdwn-libvirt repair <vm>`, then retry the backup.
 
 **Symptom:** the run aborts before the shutdown with:
 
@@ -454,6 +500,10 @@ then delete it:
 qemu-img info /var/lib/libvirt/images/<disk>.bdwn
 rm /var/lib/libvirt/images/<disk>.bdwn
 ```
+
+`bdwn-libvirt repair <vm>` detects and reports this case too (`nothing to
+merge, but a stale overlay file is left over: ...`), but it never deletes the
+file for you: removing it is a manual decision.
 
 ## SSH setup
 

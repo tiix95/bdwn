@@ -7,13 +7,24 @@
 # (blockcommit) or cold (qemu-img commit), see BDWN_LIBVIRT_MERGE_MODE.
 # A VM that is already shut off is exported directly, no snapshot.
 # Meant to be run by the bdwn-libvirt@<vm>.timer systemd template as root.
+#
+# 'bdwn-libvirt repair <vm>' cleans up after a run that died before the merge:
+# it merges the leftover overlays back and puts the VM on its base images.
 set -eu
-
-VM="${1:?usage: bdwn-libvirt <vm-name>}"
 
 CONFIG_FILE="${BDWN_CONFIG:-/etc/bdwn/bdwn.conf}"
 
 die() { echo "bdwn-libvirt: $*" >&2; exit 1; }
+
+usage() { die "usage: bdwn-libvirt <vm-name> | bdwn-libvirt repair <vm-name>"; }
+
+MODE=backup
+case "${1:-}" in
+'') usage ;;
+repair) MODE=repair; shift; [ $# -ge 1 ] || usage ;;
+-*) usage ;;
+esac
+VM="$1"
 
 # Only BDWN_LIBVIRT_* settings are used here; the repo/passphrase part of the
 # config is consumed by /usr/bin/bdwn itself.
@@ -108,97 +119,171 @@ merge_cold() {
     RESTART_ON_FAIL=0
 }
 
-# Base disk images (device 'disk' only, cdroms skipped), captured before any
-# snapshot so they point to the real files. Paths must not contain spaces.
-BASE_DISKS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $4}')
-DISK_TARGETS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $3}')
-[ -n "$BASE_DISKS" ] || die "no disk found for domain $VM"
+# Current disk paths of the domain (device 'disk' only, cdroms skipped), as
+# the domain XML sees them: base images normally, overlays after a snapshot.
+# Paths must not contain spaces.
+disk_paths() {
+    virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $4}'
+}
 
-# A disk still pointing to a .bdwn overlay means a previous run failed after
-# the snapshot: backing up (and snapshotting) on top of it would stack
-# overlays, refuse and let the admin merge it back first.
-for disk in $BASE_DISKS; do
-    case "$disk" in
-    *."$SNAP_NAME")
-        die "leftover overlay from a failed run: $disk
-Merge it back before retrying (see README, libvirt troubleshooting):
-  virsh shutdown $VM   # wait for 'shut off'
-  qemu-img commit $disk
-  virsh define /var/backups/bdwn/libvirt/$VM.xml
-  rm $disk
-  virsh start $VM" ;;
+# Overlay file libvirt would create for a base image: base file name with its
+# last extension replaced by the snapshot name, in the same directory.
+overlay_of() {
+    name=$(basename "$1")
+    case "$name" in
+    *.*) name="${name%.*}" ;;
     esac
-done
+    echo "$(dirname "$1")/$name.$SNAP_NAME"
+}
 
-# Persistent domain definition, dumped before the snapshot: it references the
-# base images (consistent with what is exported) and is used to restore the
-# persistent config after the blockcommit pivot.
-mkdir -p "$STAGING_DIR"
-chmod 0700 "$STAGING_DIR"
-DOMAIN_XML="$STAGING_DIR/$VM.xml"
-virsh dumpxml --inactive --security-info "$VM" > "$DOMAIN_XML"
+cmd_backup() {
+    # Captured before any snapshot so they point to the real base files.
+    BASE_DISKS=$(disk_paths)
+    DISK_TARGETS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $3}')
+    [ -n "$BASE_DISKS" ] || die "no disk found for domain $VM"
 
-WAS_RUNNING=0
-if [ "$(virsh domstate "$VM")" = "running" ]; then
-    WAS_RUNNING=1
-
-    # An overlay file left behind by a previous run (merged back by hand but
-    # never deleted) makes 'snapshot-create-as' fail. Check it here, before
-    # shutting the VM down, instead of failing mid-backup. Same naming rule as
-    # libvirt: base file name with its last extension replaced by the snapshot
-    # name, in the same directory.
+    # A disk still pointing to a .bdwn overlay means a previous run failed
+    # after the snapshot: backing up (and snapshotting) on top of it would
+    # stack overlays, refuse and let the admin merge it back first.
     for disk in $BASE_DISKS; do
-        name=$(basename "$disk")
-        case "$name" in
-        *.*) name="${name%.*}" ;;
+        case "$disk" in
+        *."$SNAP_NAME")
+            die "leftover overlay from a failed run: $disk
+Merge it back before retrying:
+  bdwn-libvirt repair $VM" ;;
         esac
-        overlay="$(dirname "$disk")/$name.$SNAP_NAME"
-        [ -e "$overlay" ] || continue
-        die "orphaned overlay file from a previous run: $overlay
+    done
+
+    # Persistent domain definition, dumped before the snapshot: it references
+    # the base images (consistent with what is exported) and is used to restore
+    # the persistent config after the blockcommit pivot.
+    mkdir -p "$STAGING_DIR"
+    chmod 0700 "$STAGING_DIR"
+    DOMAIN_XML="$STAGING_DIR/$VM.xml"
+    virsh dumpxml --inactive --security-info "$VM" > "$DOMAIN_XML"
+
+    WAS_RUNNING=0
+    if [ "$(virsh domstate "$VM")" = "running" ]; then
+        WAS_RUNNING=1
+
+        # An overlay file left behind by a previous run (merged back by hand
+        # but never deleted) makes 'snapshot-create-as' fail. Check it here,
+        # before shutting the VM down, instead of failing mid-backup.
+        for disk in $BASE_DISKS; do
+            overlay=$(overlay_of "$disk")
+            [ -e "$overlay" ] || continue
+            die "orphaned overlay file from a previous run: $overlay
 $VM currently runs on its base image $disk, so this overlay is stale and
 cannot be merged back. Check then remove it before retrying:
   qemu-img info $overlay
   rm $overlay"
-    done
+        done
 
-    RESTART_ON_FAIL=1
-    shutdown_vm
+        RESTART_ON_FAIL=1
+        shutdown_vm
 
-    # Cold snapshot: qcow2 overlays created while the VM is off. The VM then
-    # writes to the overlays, leaving the base images stable for the export.
-    # --no-metadata: libvirt does not track the snapshot, cleanup is just
-    # blockcommit + rm of the overlay files.
-    echo "bdwn-libvirt: taking cold snapshot of $VM"
-    virsh snapshot-create-as "$VM" "$SNAP_NAME" --disk-only --atomic --no-metadata >/dev/null
-    OVERLAYS=$(virsh domblklist "$VM" --details | awk 'NR>2 && $2=="disk" {print $4}')
+        # Cold snapshot: qcow2 overlays created while the VM is off. The VM
+        # then writes to the overlays, leaving the base images stable for the
+        # export. --no-metadata: libvirt does not track the snapshot, cleanup
+        # is just blockcommit + rm of the overlay files.
+        echo "bdwn-libvirt: taking cold snapshot of $VM"
+        virsh snapshot-create-as "$VM" "$SNAP_NAME" --disk-only --atomic --no-metadata >/dev/null
+        OVERLAYS=$(disk_paths)
 
-    echo "bdwn-libvirt: restarting $VM"
-    virsh start "$VM" >/dev/null
-    RESTART_ON_FAIL=0
-fi
+        echo "bdwn-libvirt: restarting $VM"
+        virsh start "$VM" >/dev/null
+        RESTART_ON_FAIL=0
+    fi
 
-# Export domain XML and base images. restic reads the base files in place:
-# no local copy is needed, the running VM only touches the overlays.
-echo "bdwn-libvirt: exporting $VM to the bdwn repository"
-bdwn init
-# shellcheck disable=SC2086
-bdwn restic backup --verbose --tag "libvirt-$VM" "$DOMAIN_XML" $BASE_DISKS
+    # Export domain XML and base images. restic reads the base files in place:
+    # no local copy is needed, the running VM only touches the overlays.
+    echo "bdwn-libvirt: exporting $VM to the bdwn repository"
+    bdwn init
+    # shellcheck disable=SC2086
+    bdwn restic backup --verbose --tag "libvirt-$VM" "$DOMAIN_XML" $BASE_DISKS
 
-if [ "$WAS_RUNNING" = 1 ]; then
-    if [ "$MERGE_MODE" = cold ]; then
-        merge_cold
-    elif merge_live; then
-        restore_definition
-    elif [ "$MERGE_MODE" = live ]; then
-        die "blockcommit failed: the backup itself succeeded and $VM keeps running
+    if [ "$WAS_RUNNING" = 1 ]; then
+        if [ "$MERGE_MODE" = cold ]; then
+            merge_cold
+        elif merge_live; then
+            restore_definition
+        elif [ "$MERGE_MODE" = live ]; then
+            die "blockcommit failed: the backup itself succeeded and $VM keeps running
 safely on its overlay. Usual cause on Debian: AppArmor denies qemu the
 read-write reopen of the base image. Set BDWN_LIBVIRT_MERGE_MODE=auto (or
-cold) to merge with the VM stopped instead, or merge by hand (see README,
-libvirt troubleshooting)."
-    else
-        echo "bdwn-libvirt: live merge refused, falling back to a cold merge" >&2
-        merge_cold
+cold) to merge with the VM stopped instead, or merge the overlay back with:
+  bdwn-libvirt repair $VM"
+        else
+            echo "bdwn-libvirt: live merge refused, falling back to a cold merge" >&2
+            merge_cold
+        fi
     fi
-fi
 
-echo "bdwn-libvirt: backup of $VM done"
+    echo "bdwn-libvirt: backup of $VM done"
+}
+
+# Clean up after a run that died between the snapshot and the merge: commit the
+# leftover overlays into their base images with the VM stopped, restore the
+# pre-snapshot definition and remove the overlay files. Same sequence as the
+# cold merge, but starting from whatever state the failed run left behind, so
+# it is safe to run twice or on a healthy VM.
+cmd_repair() {
+    DISKS=$(disk_paths)
+    [ -n "$DISKS" ] || die "no disk found for domain $VM"
+
+    OVERLAYS=""
+    for disk in $DISKS; do
+        case "$disk" in
+        *."$SNAP_NAME") OVERLAYS="$OVERLAYS $disk" ;;
+        esac
+    done
+
+    # No overlay in the definition: nothing to merge. An overlay file still
+    # sitting next to a base image is then stale (the VM writes to the base),
+    # merging it would corrupt the disk, so only report it.
+    if [ -z "$OVERLAYS" ]; then
+        for disk in $DISKS; do
+            overlay=$(overlay_of "$disk")
+            [ -e "$overlay" ] || continue
+            die "nothing to merge, but a stale overlay file is left over: $overlay
+$VM runs on its base image $disk, so this overlay must not be merged back.
+Check then remove it:
+  qemu-img info $overlay
+  rm $overlay"
+        done
+        echo "bdwn-libvirt: $VM already runs on its base images, nothing to repair"
+        return 0
+    fi
+
+    DOMAIN_XML="$STAGING_DIR/$VM.xml"
+    [ -r "$DOMAIN_XML" ] || die "pre-snapshot domain definition not found: $DOMAIN_XML
+It is written by every backup run and needed to point $VM back at its base
+images. Without it, merge by hand and rewrite the <source file=...> of each
+disk in 'virsh edit $VM'."
+
+    WAS_RUNNING=0
+    if [ "$(virsh domstate "$VM")" != "shut off" ]; then
+        WAS_RUNNING=1
+        RESTART_ON_FAIL=1
+        shutdown_vm
+    fi
+
+    for overlay in $OVERLAYS; do
+        echo "bdwn-libvirt: committing overlay $overlay"
+        qemu-img commit "$overlay" >/dev/null || die "qemu-img commit failed for $overlay"
+    done
+    restore_definition
+
+    if [ "$WAS_RUNNING" = 1 ]; then
+        echo "bdwn-libvirt: restarting $VM"
+        virsh start "$VM" >/dev/null
+        RESTART_ON_FAIL=0
+    fi
+
+    echo "bdwn-libvirt: repair of $VM done"
+}
+
+case "$MODE" in
+backup) cmd_backup ;;
+repair) cmd_repair ;;
+esac
