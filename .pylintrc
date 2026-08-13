@@ -1,0 +1,13 @@
+# Lint settings for the bdwn_webui module: pylint --rcfile=.pylintrc src/bdwn_webui
+[MAIN]
+max-line-length = 100
+
+[MESSAGES CONTROL]
+# invalid-name: do_GET / do_HEAD are imposed by BaseHTTPRequestHandler
+# too-few-public-methods, too-many-instance-attributes: plain data holders
+# missing-function-docstring: self explanatory properties of the dataclasses
+disable =
+    invalid-name,
+    too-few-public-methods,
+    too-many-instance-attributes,
+    missing-function-docstring

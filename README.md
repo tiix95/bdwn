@@ -66,8 +66,9 @@ apt install ./bdwn_*.deb
 `bdwn-server` is installed on the **backup server**, not on the client, and is
 independent of `bdwn`: a backup server need not be a backup client. It ships
 `bdwn-setup-backup-user` (one SFTP-only chrooted user and restic repository
-per client) and `bdwn-export` (mirror of the server repositories onto an
-external device). See [server/README.md](server/README.md).
+per client), `bdwn-export` (mirror of the server repositories onto an
+external device) and `bdwn-webui` (read-only status page showing the state and
+the size of every repository). See [server/README.md](server/README.md).
 
 When `bdwn-libvirt` is installed, pass both packages to apt in the same command
 so they upgrade together:
@@ -574,8 +575,17 @@ BDWN_REPO="sftp:backup-remote:/$(hostname)"
 
 The same package also ships `bdwn-export`, which mirrors every client
 repository held by the backup server onto an external device with rsync, with
-no passphrase involved. See [server/README.md](server/README.md) for the full
-server-side procedure, the `bdwn-server` package contents and the export.
+no passphrase involved, and `bdwn-webui`, a read-only status page listing the
+state, the size and the last snapshot date of every repository:
+
+```sh
+systemctl enable --now bdwn-webui                                 # on the server
+ssh -L 8080:/run/bdwn-webui/bdwn-webui.sock root@backup-server    # from a workstation
+```
+
+then open `http://localhost:8080/`. See [server/README.md](server/README.md)
+for the full server-side procedure, the `bdwn-server` package contents, the
+export and the web UI.
 
 ## Layout on the target system
 

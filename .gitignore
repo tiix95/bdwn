@@ -12,5 +12,9 @@ debian/debhelper-build-stamp
 debian/bdwn.postrm.debhelper
 debian/*.substvars
 
+# Python bytecode of the bdwn-webui module
+__pycache__/
+*.pyc
+
 # Local tooling
 .claude/settings.local.json

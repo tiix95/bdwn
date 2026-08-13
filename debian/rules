@@ -26,9 +26,17 @@ override_dh_auto_install:
 	install -d debian/bdwn-server/usr/share/bdwn-server
 	install -m 0640 examples/bdwn-export.conf debian/bdwn-server/usr/share/bdwn-server/bdwn-export.conf.example
 	install -m 0644 server/sshd_bdwn-backup.conf debian/bdwn-server/usr/share/bdwn-server/sshd_bdwn-backup.conf.example
+	install -m 0644 files/systemd/webui-tcp-dropin.conf debian/bdwn-server/usr/share/bdwn-server/webui-tcp-dropin.conf.example
+	install -m 0644 server/nginx-bdwn-webui.conf debian/bdwn-server/usr/share/bdwn-server/nginx-bdwn-webui.conf.example
+	install -m 0640 examples/bdwn-webui.conf debian/bdwn-server/usr/share/bdwn-server/bdwn-webui.conf.example
+	install -m 0755 server/bdwn-webui.sh debian/bdwn-server/usr/bin/bdwn-webui
+	install -d debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/templates
+	install -m 0644 src/bdwn_webui/*.py debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/
+	install -m 0644 src/bdwn_webui/templates/status.html.j2 debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/templates/
 	install -d debian/bdwn-server/lib/systemd/system
 	install -m 0644 files/systemd/bdwn-export.service debian/bdwn-server/lib/systemd/system/bdwn-export.service
 	install -m 0644 files/systemd/bdwn-export.timer debian/bdwn-server/lib/systemd/system/bdwn-export.timer
+	install -m 0644 files/systemd/bdwn-webui.service debian/bdwn-server/lib/systemd/system/bdwn-webui.service
 	install -d debian/bdwn-libvirt/usr/bin
 	install -m 0755 src/bdwn-libvirt.sh debian/bdwn-libvirt/usr/bin/bdwn-libvirt
 	install -d debian/bdwn-libvirt/lib/systemd/system

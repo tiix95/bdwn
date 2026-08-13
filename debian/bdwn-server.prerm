@@ -5,6 +5,8 @@ case "$1" in
     remove|deconfigure)
         systemctl stop bdwn-export.timer > /dev/null 2>&1 || true
         systemctl disable bdwn-export.timer > /dev/null 2>&1 || true
+        systemctl stop bdwn-webui > /dev/null 2>&1 || true
+        systemctl disable bdwn-webui > /dev/null 2>&1 || true
         ;;
 
     upgrade|failed-upgrade)

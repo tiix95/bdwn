@@ -1,0 +1,68 @@
+[Unit]
+Description=BackDown status web UI for the backup repositories
+# Purely local: it reads the repositories on disk, it never opens one and
+# never talks to a client.
+
+[Service]
+Type=exec
+User=bdwn-webui
+Group=bdwn-webui
+ExecStart=/usr/bin/bdwn-webui
+Restart=on-failure
+RestartSec=5
+
+Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+# Unix socket lives here, owned by the service user and group
+RuntimeDirectory=%N
+RuntimeDirectoryMode=0750
+
+# Filesystem: nothing is ever written outside /run/%N
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# The repositories are 0700 and owned by each backup client, so reading their
+# sizes needs a DAC bypass. CAP_DAC_READ_SEARCH grants read and traverse only,
+# never write. Hide the two files that capability has no business reaching:
+# the client passphrase and the client SSH keys, when this host is also a
+# backup client.
+InaccessiblePaths=-/etc/bdwn/bdwn.conf
+InaccessiblePaths=-/var/lib/bdwn/.ssh
+
+# Privileges
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+SecureBits=keep-caps
+
+# Syscalls
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @clock @swap @reboot @obsolete @cpu-emulation @debug @raw-io
+
+# Network: unix socket only. Listening on a TCP address needs the drop-in
+# /usr/share/bdwn-server/webui-tcp-dropin.conf.example.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+
+# Misc
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+KeyringMode=private
+
+[Install]
+WantedBy=multi-user.target

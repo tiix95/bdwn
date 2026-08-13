@@ -3,6 +3,9 @@ set -e
 
 CONFIG_DIR="/etc/bdwn"
 CONFIG_FILE="${CONFIG_DIR}/bdwn-export.conf"
+WEBUI_CONFIG_FILE="${CONFIG_DIR}/bdwn-webui.conf"
+WEBUI_USER="bdwn-webui"
+WEBUI_GROUP="bdwn-webui"
 # Default jail of bdwn-setup-backup-user, only used for the message below
 CHROOT_BASE="/backups/servers"
 
@@ -19,10 +22,35 @@ case "$1" in
         chown root:root "${CONFIG_FILE}"
         chmod 0600 "${CONFIG_FILE}"
 
-        # Reload units so systemd sees bdwn-export.timer / bdwn-export.service.
-        # The timer is NOT enabled automatically: it only makes sense when the
-        # external device stays plugged in.
+        # Unprivileged user of the status web UI. It reads the repositories
+        # through CAP_DAC_READ_SEARCH (granted by the unit), never as root.
+        if ! getent group "${WEBUI_GROUP}" > /dev/null 2>&1; then
+            addgroup --system "${WEBUI_GROUP}"
+        fi
+        if ! getent passwd "${WEBUI_USER}" > /dev/null 2>&1; then
+            adduser --system \
+                --home /nonexistent \
+                --no-create-home \
+                --ingroup "${WEBUI_GROUP}" \
+                --shell /usr/sbin/nologin \
+                "${WEBUI_USER}"
+        fi
+
+        # Seed the web UI config from the example on first install only. It
+        # holds no secret, but lives in the root-only ${CONFIG_DIR}.
+        if [ ! -e "${WEBUI_CONFIG_FILE}" ]; then
+            cp /usr/share/bdwn-server/bdwn-webui.conf.example "${WEBUI_CONFIG_FILE}"
+        fi
+        chown root:"${WEBUI_GROUP}" "${WEBUI_CONFIG_FILE}"
+        chmod 0640 "${WEBUI_CONFIG_FILE}"
+
+        # Reload units so systemd sees bdwn-export.timer / bdwn-export.service
+        # and bdwn-webui.service. Nothing is enabled automatically: the export
+        # timer only makes sense when the external device stays plugged in, and
+        # the web UI is started once its config suits the admin.
         systemctl daemon-reload
+        # Load the new code on upgrade, only if the web UI is already running
+        systemctl try-restart bdwn-webui > /dev/null 2>&1 || true
 
         echo ""
         echo "bdwn-server installed. Next steps:"
@@ -44,6 +72,13 @@ case "$1" in
         echo "     (it mounts and unmounts the device itself)."
         echo "  5. Only if the device stays plugged in, for a weekly export:"
         echo "       systemctl enable --now bdwn-export.timer"
+        echo "  6. Optional, status page (state and size of every repository):"
+        echo "       systemctl enable --now bdwn-webui"
+        echo "     It listens on the unix socket /run/bdwn-webui/bdwn-webui.sock."
+        echo "     Read it from a workstation, without exposing anything:"
+        echo "       ssh -L 8080:/run/bdwn-webui/bdwn-webui.sock root@$(hostname)"
+        echo "     then open http://localhost:8080/ . Settings, thresholds and"
+        echo "     TCP listening: ${WEBUI_CONFIG_FILE}"
         echo ""
         ;;
 

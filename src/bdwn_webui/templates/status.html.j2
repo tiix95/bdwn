@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="{{ refresh }}">
+<title>bdwn // {{ hostname }}</title>
+<style>
+:root {
+  --bg: #0d1015;
+  --panel: #141920;
+  --panel-2: #10151b;
+  --line: #222a35;
+  --text: #d5dde7;
+  --dim: #78849a;
+  --accent: #7dd3fc;
+  --ok: #4ade80;
+  --late: #fbbf24;
+  --stale: #f87171;
+  --idle: #64748b;
+  --mono: "DejaVu Sans Mono", "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  padding: 0 0 3rem;
+  background:
+    radial-gradient(120vw 60vh at 8% -10%, #17202b 0%, transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--mono);
+  letter-spacing: .01em;
+}
+/* Faint scanlines: gives the page the texture of a console, not a template. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg, transparent 0 3px, rgba(255, 255, 255, .014) 3px 4px);
+  z-index: 2;
+}
+/* Thin line filling up until the page reloads itself. */
+.pulse {
+  position: fixed;
+  top: 0; left: 0;
+  height: 2px;
+  width: 0;
+  background: linear-gradient(90deg, transparent, var(--accent));
+  animation: fill linear forwards;
+  z-index: 3;
+}
+@keyframes fill { from { width: 0; } to { width: 100%; } }
+main { max-width: 1080px; margin: 0 auto; padding: 2.5rem 1.25rem 0; }
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem 2rem;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--line);
+}
+h1 {
+  margin: 0;
+  font-size: clamp(1.6rem, 4vw, 2.3rem);
+  font-weight: 700;
+  letter-spacing: .2em;
+  line-height: 1;
+}
+h1 span { color: var(--accent); }
+.sub { margin: .7rem 0 0; color: var(--dim); letter-spacing: .08em; font-size: .8rem; }
+.meta { display: flex; flex-wrap: wrap; gap: 1.75rem; margin: 0; }
+.meta dt { color: var(--dim); font-size: .68rem; letter-spacing: .16em; text-transform: uppercase; }
+.meta dd { margin: .35rem 0 0; font-size: .85rem; }
+
+.alert {
+  margin: 1.5rem 0 0;
+  padding: .85rem 1rem;
+  border: 1px solid var(--stale);
+  border-left-width: 3px;
+  background: rgba(248, 113, 113, .08);
+  color: var(--stale);
+  font-size: .85rem;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin: 2rem 0 0;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+.tile { padding: 1.1rem 1.2rem; background: var(--panel); }
+.tile h2 {
+  margin: 0;
+  color: var(--dim);
+  font-size: .68rem;
+  font-weight: 400;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.tile p { margin: .6rem 0 0; font-size: 1.55rem; font-weight: 700; letter-spacing: .02em; }
+.tile .unit { font-size: .8rem; font-weight: 400; color: var(--dim); letter-spacing: .1em; }
+.tile.wide { grid-column: 1 / -1; }
+.tile.flag p { color: var(--stale); }
+.tile.clear p { color: var(--ok); }
+
+.meter { margin-top: .85rem; height: 6px; background: var(--panel-2); border: 1px solid var(--line); }
+.meter i { display: block; height: 100%; background: var(--accent); }
+.meter.warn i { background: var(--late); }
+.meter.crit i { background: var(--stale); }
+.legend { display: flex; justify-content: space-between; margin-top: .5rem; color: var(--dim); font-size: .72rem; }
+
+.wrap { margin-top: 2rem; border: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 720px; }
+th {
+  padding: .75rem 1rem;
+  color: var(--dim);
+  font-size: .68rem;
+  font-weight: 400;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+td { padding: .8rem 1rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+tbody tr { animation: rise .45s ease both; }
+tbody tr:hover td { background: var(--panel); }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+th.num, td.num { text-align: right; }
+.name { font-weight: 700; letter-spacing: .04em; }
+.lock { margin-left: .5rem; color: var(--accent); font-size: .68rem; letter-spacing: .12em; }
+.err { display: block; margin-top: .25rem; color: var(--stale); font-size: .72rem; }
+
+/* Status is carried by the text, the colour only reinforces it. */
+.pill {
+  display: inline-block;
+  padding: .18rem .55rem;
+  border: 1px solid currentColor;
+  font-size: .68rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.s-ok { color: var(--ok); }
+.s-late { color: var(--late); }
+.s-stale, .s-unreadable { color: var(--stale); }
+.s-empty, .s-uninitialized { color: var(--idle); }
+tr.r-late { box-shadow: inset 3px 0 0 var(--late); }
+tr.r-stale, tr.r-unreadable { box-shadow: inset 3px 0 0 var(--stale); }
+tr.r-ok { box-shadow: inset 3px 0 0 var(--ok); }
+tr.r-empty, tr.r-uninitialized { box-shadow: inset 3px 0 0 var(--idle); }
+
+/* Size column: a gauge under the number, scaled to the largest repository. */
+.bar { position: relative; min-width: 130px; }
+.bar i {
+  position: absolute;
+  right: 1rem;
+  bottom: .35rem;
+  height: 3px;
+  max-width: calc(100% - 2rem);
+  background: rgba(125, 211, 252, .45);
+}
+
+.empty { padding: 2.5rem 1rem; text-align: center; color: var(--dim); }
+footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.5rem;
+  justify-content: space-between;
+  margin-top: 1.5rem;
+  color: var(--dim);
+  font-size: .74rem;
+}
+footer a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }
+footer a:hover { color: var(--text); }
+@media (max-width: 720px) {
+  main { padding-top: 1.75rem; }
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse, tbody tr { animation: none; }
+  .pulse { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="pulse" style="animation-duration: {{ refresh }}s"></div>
+<main>
+  <header class="head">
+    <div>
+      <h1>BACK<span>DOWN</span></h1>
+      <p class="sub">repository status // {{ hostname }}</p>
+    </div>
+    <dl class="meta">
+      <div><dt>jail</dt><dd>{{ server_root }}</dd></div>
+      <div><dt>scanned</dt><dd>{{ generated }}</dd></div>
+      <div><dt>scan time</dt><dd>{{ scan_seconds }} s</dd></div>
+    </dl>
+  </header>
+
+  {% if error %}
+  <p class="alert">{{ error }}</p>
+  {% endif %}
+
+  <section class="tiles">
+    <div class="tile">
+      <h2>servers</h2>
+      <p>{{ totals.repositories }}</p>
+    </div>
+    <div class="tile">
+      <h2>total size</h2>
+      <p>{{ total_size }}</p>
+    </div>
+    <div class="tile {{ 'clear' if totals.ok == totals.repositories and totals.repositories }}">
+      <h2>up to date</h2>
+      <p>{{ totals.ok }}<span class="unit"> / {{ totals.repositories }}</span></p>
+    </div>
+    <div class="tile {{ 'flag' if alerts }}">
+      <h2>alerts</h2>
+      <p>{{ alerts }}</p>
+    </div>
+    {% if volume %}
+    <div class="tile wide">
+      <h2>volume</h2>
+      <p>{{ volume.free }}<span class="unit"> free</span></p>
+      <div class="meter {{ volume.level }}">
+        <i style="width: {{ volume.used_percent }}%"></i>
+      </div>
+      <div class="legend">
+        <span>{{ volume.used }} used</span>
+        <span>{{ volume.used_percent }}% of {{ volume.total }}</span>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>server</th>
+          <th>status</th>
+          <th class="num">size</th>
+          <th class="num">snapshots</th>
+          <th class="num">files</th>
+          <th>last backup</th>
+          <th class="num">age</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for repo in repositories %}
+        <tr class="r-{{ repo.status }}" style="animation-delay: {{ loop.index0 * 40 }}ms">
+          <td>
+            <span class="name">{{ repo.name }}</span>
+            {% if repo.locks %}<span class="lock">[busy]</span>{% endif %}
+            {% if repo.error %}<span class="err">{{ repo.error }}</span>{% endif %}
+          </td>
+          <td><span class="pill s-{{ repo.status }}">{{ repo.label }}</span></td>
+          <td class="num bar">
+            <i style="width: {{ repo.bar }}%"></i>{{ repo.size }}
+          </td>
+          <td class="num">{{ repo.snapshots }}</td>
+          <td class="num">{{ repo.files }}</td>
+          <td>{{ repo.last }}</td>
+          <td class="num">{{ repo.age }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="empty" colspan="7">no repository under {{ server_root }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    <span>late after {{ stale_hours }} h, stale after {{ critical_hours }} h - repositories are
+      encrypted, this server holds no passphrase</span>
+    <span><a href="/api/status">/api/status</a> <a href="/metrics">/metrics</a></span>
+  </footer>
+</main>
+</body>
+</html>

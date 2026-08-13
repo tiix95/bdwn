@@ -25,7 +25,9 @@ Depends: ${misc:Depends},
          openssh-server,
          openssh-client,
          rsync,
-         adduser
+         adduser,
+         python3,
+         python3-jinja2
 Description: Backup server side of BackDown
  Repository server tooling for BackDown: bdwn-setup-backup-user locks down one
  SFTP-only, chrooted system user per backup client, each with its own restic
@@ -33,6 +35,11 @@ Description: Backup server side of BackDown
  onto an external device with rsync, for an offline copy kept out of the
  building. The export needs no passphrase, since the server never holds them.
  A weekly timer is provided for a permanently attached device.
+ .
+ bdwn-webui serves a read-only status page listing the state, the size and the
+ last snapshot date of every repository, with a JSON and a Prometheus endpoint.
+ It reads the repositories from the filesystem only, so it needs no passphrase
+ either.
 
 Package: bdwn-libvirt
 Architecture: all

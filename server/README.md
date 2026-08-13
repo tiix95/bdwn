@@ -7,6 +7,9 @@ Server-side tooling for bdwn, shipped as the `bdwn-server` Debian package:
   jail with one private directory per client server.
 - `bdwn-export` mirrors those repositories onto an external device with rsync,
   for an offline copy kept out of the building.
+- `bdwn-webui` serves a read-only status page showing the state, the size and
+  the last snapshot date of every repository, plus a JSON and a Prometheus
+  endpoint.
 
 The users get no interactive shell, no command execution and no forwarding of
 any kind. Access is confined to a chroot jail. Note this is not literally
@@ -24,7 +27,8 @@ apt install ./bdwn-server_*.deb
 `bdwn-server` is built from the same source tree as the `bdwn` client and
 `bdwn-libvirt` (`make deb` produces the three `.deb` files). It does **not**
 depend on `bdwn`: a backup server need not be a backup client. Its
-dependencies are `openssh-server`, `openssh-client`, `rsync` and `adduser`.
+dependencies are `openssh-server`, `openssh-client`, `rsync`, `adduser`,
+`python3` and `python3-jinja2` (the last two for the web UI only).
 
 What the package installs:
 
@@ -32,21 +36,31 @@ What the package installs:
 | ----------------------------------------------- | --------------------------------------------------- |
 | `/usr/bin/bdwn-setup-backup-user`               | Creates one SFTP-only chrooted user per backup client |
 | `/usr/bin/bdwn-export`                          | Mirrors the repositories onto an external device      |
+| `/usr/bin/bdwn-webui`                           | Status web UI (wrapper around `python3 -m bdwn_webui`) |
+| `/usr/lib/python3/dist-packages/bdwn_webui/`    | Python module of the web UI, with its HTML template   |
 | `/etc/bdwn/bdwn-export.conf`                    | Export configuration (`0600` root:root)               |
+| `/etc/bdwn/bdwn-webui.conf`                     | Web UI configuration (`0640` root:bdwn-webui)         |
 | `/usr/share/bdwn-server/bdwn-export.conf.example` | Shipped example, source of the seeded config        |
+| `/usr/share/bdwn-server/bdwn-webui.conf.example`  | Shipped example, source of the seeded web UI config |
 | `/usr/share/bdwn-server/sshd_bdwn-backup.conf.example` | Reference copy of the sshd drop-in, for review only |
+| `/usr/share/bdwn-server/webui-tcp-dropin.conf.example` | systemd drop-in to let the web UI listen on TCP |
+| `/usr/share/bdwn-server/nginx-bdwn-webui.conf.example` | Reverse proxy for the web UI (TLS, auth, rate limit) |
 | `/lib/systemd/system/bdwn-export.service`       | Oneshot export service (no argument)                  |
 | `/lib/systemd/system/bdwn-export.timer`         | Weekly export timer, **not** enabled by the package   |
+| `/lib/systemd/system/bdwn-webui.service`        | Status web UI service, **not** enabled by the package |
 
 The `postinst` creates `/etc/bdwn` (`0700` root:root, shared with the `bdwn`
 client package when both are installed) and seeds
-`/etc/bdwn/bdwn-export.conf` from the example on first install only. It
-reloads systemd but enables nothing: the timer only makes sense when the
-external device stays plugged in. It then prints a numbered "Next steps" block
+`/etc/bdwn/bdwn-export.conf` and `/etc/bdwn/bdwn-webui.conf` from the examples
+on first install only. It creates the `bdwn-webui` system user and group that
+run the web UI. It reloads systemd but enables nothing: the export timer only
+makes sense when the external device stays plugged in, and the web UI is
+started once its config suits you. It then prints a numbered "Next steps" block
 summarising the setup (sshd `Include` line, `bdwn-setup-backup-user`, nftables
-rule, export, timer).
+rule, export, timer, web UI).
 
-`apt purge bdwn-server` removes only `/etc/bdwn/bdwn-export.conf`. The
+`apt purge bdwn-server` removes only `/etc/bdwn/bdwn-export.conf`,
+`/etc/bdwn/bdwn-webui.conf` and the `bdwn-webui` user and group. The
 repositories under `/backups/servers`, the backup users and the sshd drop-in
 are left untouched on purpose.
 
@@ -315,6 +329,195 @@ the unit even if `bdwn-export` is killed), `PrivateNetwork=yes`,
   the restic repositories themselves stay encrypted with each client's
   passphrase, which is not stored anywhere on the backup server. Lose a client
   passphrase and its copy on the device is unreadable.
+
+## Status web UI
+
+`bdwn-webui` serves one read-only page listing every repository under the
+jail: state, size, number of snapshots, date of the last one. It is meant to
+answer the only question a backup server is really asked: did every client
+push last night, and how much does it weigh.
+
+It never opens a repository. The repositories are encrypted and this server
+holds no passphrase, so everything on the page comes from the filesystem:
+
+| Shown                | Read from                                              |
+| -------------------- | ------------------------------------------------------ |
+| Repository size      | Sum of the file sizes under `<jail>/<server>/`          |
+| Last backup          | mtime of the newest file in `<jail>/<server>/snapshots/` |
+| Number of snapshots  | Number of files in `<jail>/<server>/snapshots/`         |
+| `[busy]` marker      | A file in `<jail>/<server>/locks/`, so restic is running (or a lock was left behind by a crash) |
+| Volume usage         | `statvfs` on the jail                                   |
+| Free space           | Same                                                    |
+
+What it can **not** show, by construction: the list of backed up files, the
+snapshot tags or hosts, and whether the data is sound (`restic check`). All of
+these need the client's passphrase, which never reaches this server. Restoring
+still happens on the client, or on any machine holding the passphrase.
+
+Each repository gets one of these states:
+
+| State         | Meaning                                                        |
+| ------------- | -------------------------------------------------------------- |
+| `ok`          | Last snapshot newer than `BDWN_WEBUI_STALE_HOURS` (default 26h) |
+| `late`        | Older than that, but newer than `BDWN_WEBUI_CRITICAL_HOURS` (default 72h) |
+| `stale`       | Older than `BDWN_WEBUI_CRITICAL_HOURS`: this client stopped backing up |
+| `no snapshot` | Repository initialised, no snapshot in it yet                   |
+| `no repo`     | User declared by `bdwn-setup-backup-user`, restic never ran     |
+| `error`       | The directory could not be read                                 |
+
+### Start it and reach it
+
+By default it listens on the unix socket `/run/bdwn-webui/bdwn-webui.sock`,
+which exposes nothing on the network:
+
+```sh
+systemctl enable --now bdwn-webui
+journalctl -u bdwn-webui
+```
+
+Read it from a workstation over SSH, with no proxy and no open port (OpenSSH
+forwards a local port to a remote unix socket):
+
+```sh
+ssh -L 8080:/run/bdwn-webui/bdwn-webui.sock root@backup-server
+```
+
+then open `http://localhost:8080/`. Straight from the server:
+
+```sh
+curl --unix-socket /run/bdwn-webui/bdwn-webui.sock http://localhost/api/status
+```
+
+### Behind a reverse proxy
+
+The page has **no authentication of its own**. Anything beyond the unix socket
+(TCP, reverse proxy) must be protected by the proxy or the network. A complete
+nginx server block is shipped with the package: TLS, network allowlist, basic
+auth (or client certificates), rate limiting, `/metrics` restricted to the
+scraper, everything else answering 404.
+
+```sh
+cp /usr/share/bdwn-server/nginx-bdwn-webui.conf.example \
+   /etc/nginx/sites-available/bdwn-webui
+# adapt listen address, server_name, certificates and allowed networks, then
+adduser www-data bdwn-webui                # the socket is 0660 bdwn-webui:bdwn-webui
+apt install apache2-utils
+htpasswd -B -c /etc/nginx/bdwn-webui.htpasswd admin
+chown root:www-data /etc/nginx/bdwn-webui.htpasswd
+chmod 0640 /etc/nginx/bdwn-webui.htpasswd
+ln -s ../sites-available/bdwn-webui /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+```
+
+Matching nftables rule:
+
+```nft
+iifname $main_if ip daddr $main_ip ip saddr 192.168.7.0/24 tcp dport 443 \
+    ct state new counter accept comment "bdwn-webui"
+```
+
+Two things not to miss:
+
+- `adduser www-data bdwn-webui` is **required**, otherwise nginx answers 502:
+  the socket is `0660`, not `0666`.
+- Do not add `X-Frame-Options` or a `Content-Security-Policy` in the proxy.
+  `add_header` does not replace the header sent by bdwn-webui, it duplicates
+  it, and a browser given two `Content-Security-Policy` headers applies the
+  intersection of both, which breaks the page. The shipped example only adds
+  HSTS, which the application cannot know about.
+
+### Listening on TCP instead
+
+Set `BDWN_WEBUI_LISTEN` to a `host:port` and install the shipped drop-in, which
+gives the unit the network stack its default sandbox denies:
+
+```sh
+install -d -m 0755 /etc/systemd/system/bdwn-webui.service.d
+cp /usr/share/bdwn-server/webui-tcp-dropin.conf.example \
+   /etc/systemd/system/bdwn-webui.service.d/tcp.conf
+sed -i 's|^# BDWN_WEBUI_LISTEN="127.0.0.1:8080"|BDWN_WEBUI_LISTEN="127.0.0.1:8080"|' \
+   /etc/bdwn/bdwn-webui.conf
+systemctl daemon-reload && systemctl restart bdwn-webui
+```
+
+Use a port above 1024: the service holds no `CAP_NET_BIND_SERVICE`.
+
+### Endpoints
+
+| Route         | Content                                                          |
+| ------------- | ----------------------------------------------------------------- |
+| `/`           | The status page. Reloads itself every `BDWN_WEBUI_CACHE_TTL` seconds |
+| `/api/status` | The same report as JSON (totals, volume, one object per repository) |
+| `/metrics`    | The same report in the Prometheus text format                      |
+
+Only `GET` and `HEAD` are served; anything else is refused. Scraping
+`/metrics` gives alerting on backups that stopped arriving, again without any
+passphrase:
+
+```yaml
+# Backup missing for more than three days
+- alert: BdwnRepositoryStale
+  expr: time() - bdwn_repo_last_snapshot_timestamp_seconds > 3 * 86400
+  labels: { severity: warning }
+```
+
+Exported metrics: `bdwn_repo_size_bytes`, `bdwn_repo_files`,
+`bdwn_repo_snapshots`, `bdwn_repo_locks`,
+`bdwn_repo_last_snapshot_timestamp_seconds`, `bdwn_repo_status`
+(`1` on the current status of each server), `bdwn_volume_size_bytes`,
+`bdwn_volume_free_bytes`, `bdwn_scan_duration_seconds` and
+`bdwn_scan_timestamp_seconds`. All repository metrics carry a `server` label.
+
+### Configuration
+
+`/etc/bdwn/bdwn-webui.conf`, same plain shell syntax as the other bdwn config
+files (no spaces around `=`). Every key is optional, and so is the file. It
+holds no passphrase.
+
+| Variable                   | Default                              | Meaning                                                    |
+| -------------------------- | ------------------------------------ | ---------------------------------------------------------- |
+| `BDWN_SERVER_ROOT`         | `/backups/servers`                   | Chroot jail holding the repositories. Must match `CHROOT_BASE` if you changed it. |
+| `BDWN_WEBUI_LISTEN`        | `unix:/run/bdwn-webui/bdwn-webui.sock` | Unix socket (`unix:/path`) or TCP address (`host:port`).  |
+| `BDWN_WEBUI_SOCKET_MODE`   | `0660`                               | Mode of the unix socket once bound.                        |
+| `BDWN_WEBUI_CACHE_TTL`     | `300`                                | Seconds a scan is kept before being redone. Also the reload interval of the page. |
+| `BDWN_WEBUI_STALE_HOURS`   | `26`                                 | Age of the last snapshot above which a repository is `late`. |
+| `BDWN_WEBUI_CRITICAL_HOURS`| `72`                                 | Age above which it is `stale`.                              |
+
+Command line, mostly for debugging (`--config` reads another file, `--listen`
+overrides the address, `--dump` prints one report as JSON and exits):
+
+```sh
+bdwn-webui --dump | jq '.repositories[] | {name, status, size_bytes}'
+bdwn-webui --listen 127.0.0.1:8080          # foreground, ignores the sandbox
+```
+
+### Cost of a scan
+
+One scan walks every file of every repository (`stat` only, nothing is read),
+so it is cached for `BDWN_WEBUI_CACHE_TTL` seconds and shared by all requests
+and all endpoints. The page shows how long the last scan took. On a server
+holding millions of pack files, raise the TTL rather than the hardware.
+
+### Permissions
+
+The repositories are `0700` and owned by each backup client, so being in the
+`bdwn` group is not enough to read them. The service runs as the unprivileged
+`bdwn-webui` user with the single capability `CAP_DAC_READ_SEARCH`, which
+bypasses read and traverse checks but grants **no write access anywhere**. The
+unit hides the two files that capability has no business reaching when the
+host is also a backup client (`InaccessiblePaths`): `/etc/bdwn/bdwn.conf`
+(client passphrase) and `/var/lib/bdwn/.ssh`.
+
+The rest of the sandbox: `ProtectSystem=strict` (the whole filesystem is
+read-only, only `/run/bdwn-webui` is writable), `PrivateNetwork=yes` with
+`RestrictAddressFamilies=AF_UNIX` in the default unix-socket mode,
+`NoNewPrivileges=yes`, `SystemCallFilter=@system-service` minus the dangerous
+groups, `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `ProtectProc=invisible`,
+`ProcSubset=pid`, `RestrictNamespaces`, `MemoryDenyWriteExecute`, `UMask=0077`.
+
+Symbolic links are never followed while scanning. A backup client owns its
+directory over SFTP and could drop a link to `/` in it; following it would
+report a nonsense size and read outside the jail.
 
 ## Hardening notes
 

@@ -6,7 +6,16 @@ case "$1" in
         # Only this package's config: the repositories in /backups/servers,
         # the backup users and the sshd drop-in are left untouched on purpose.
         rm -f /etc/bdwn/bdwn-export.conf
+        rm -f /etc/bdwn/bdwn-webui.conf
         rmdir --ignore-fail-on-non-empty /etc/bdwn 2> /dev/null || true
+
+        # Service user of the status web UI
+        if getent passwd bdwn-webui > /dev/null 2>&1; then
+            deluser --system bdwn-webui || true
+        fi
+        if getent group bdwn-webui > /dev/null 2>&1; then
+            delgroup --system bdwn-webui || true
+        fi
         ;;
 
     remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)

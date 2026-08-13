@@ -5,3 +5,7 @@
 # restic           - backup engine (encrypted, deduplicated)
 # openssh-client   - SFTP/SSH transport to the remote repository
 # adduser          - creation of the unprivileged system user
+#
+# bdwn-server also ships bdwn-webui, written in Python (stdlib only, plus):
+# python3          - Debian package python3 (>= 3.11 for StrEnum)
+# jinja2           - Debian package python3-jinja2, HTML template of the page
