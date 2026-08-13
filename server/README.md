@@ -444,11 +444,23 @@ Use a port above 1024: the service holds no `CAP_NET_BIND_SERVICE`.
 
 ### Endpoints
 
-| Route         | Content                                                          |
-| ------------- | ----------------------------------------------------------------- |
-| `/`           | The status page. Reloads itself every `BDWN_WEBUI_CACHE_TTL` seconds |
-| `/api/status` | The same report as JSON (totals, volume, one object per repository) |
-| `/metrics`    | The same report in the Prometheus text format                      |
+| Route            | Content                                                          |
+| ---------------- | ----------------------------------------------------------------- |
+| `/`              | The status page. Reloads itself every `BDWN_WEBUI_CACHE_TTL` seconds |
+| `/?refresh=1`    | Same page, forcing a fresh scan instead of the cached report        |
+| `/api/status`    | The same report as JSON (totals, volume, one object per repository) |
+| `/metrics`       | The same report in the Prometheus text format                      |
+
+The **refresh** button at the top right of the page points to `/?refresh=1`
+and spins a wheel while the answer is being built. Two scans forced this way
+are never closer than 10 seconds apart, whatever the button is subjected to;
+the automatic reload of the page always uses the cached path. `?refresh=1`
+works on `/api/status` too.
+
+The button is the only reason the page carries a script: four lines, inlined,
+which just set a class on click. The `Content-Security-Policy` pins their
+sha256 hash, so the policy is as tight as it was with no script at all, and
+the button still works (without the wheel) if scripts are blocked.
 
 Only `GET` and `HEAD` are served; anything else is refused. Scraping
 `/metrics` gives alerting on backups that stopped arriving, again without any

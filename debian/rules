@@ -32,7 +32,7 @@ override_dh_auto_install:
 	install -m 0755 server/bdwn-webui.sh debian/bdwn-server/usr/bin/bdwn-webui
 	install -d debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/templates
 	install -m 0644 src/bdwn_webui/*.py debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/
-	install -m 0644 src/bdwn_webui/templates/status.html.j2 debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/templates/
+	install -m 0644 src/bdwn_webui/templates/status.html.j2 src/bdwn_webui/templates/refresh.js debian/bdwn-server/usr/lib/python3/dist-packages/bdwn_webui/templates/
 	install -d debian/bdwn-server/lib/systemd/system
 	install -m 0644 files/systemd/bdwn-export.service debian/bdwn-server/lib/systemd/system/bdwn-export.service
 	install -m 0644 files/systemd/bdwn-export.timer debian/bdwn-server/lib/systemd/system/bdwn-export.timer

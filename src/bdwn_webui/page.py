@@ -4,6 +4,8 @@ The template gets strings only: every figure is formatted here, so the page
 itself stays a dumb layout.
 """
 
+from base64 import b64encode
+from hashlib import sha256
 from pathlib import Path
 from socket import gethostname
 from typing import Any
@@ -14,11 +16,21 @@ from bdwn_webui.format import human_age, human_bytes, local_time
 from bdwn_webui.scan import Report, Repository, Status
 
 _TEMPLATE = "status.html.j2"
+_TEMPLATES = Path(__file__).parent / "templates"
 _ENVIRONMENT = Environment(
-    loader=FileSystemLoader(Path(__file__).parent / "templates"),
+    loader=FileSystemLoader(_TEMPLATES),
     autoescape=True,
     trim_blocks=True,
     lstrip_blocks=True,
+)
+
+# The only script of the page: it just spins the wheel of the refresh button
+# while the browser loads the answer. Inlined and pinned by its hash, so the
+# policy stays as tight as it was without any script.
+_SCRIPT = (_TEMPLATES / "refresh.js").read_text(encoding="utf-8")
+_SCRIPT_HASH = b64encode(sha256(_SCRIPT.encode("utf-8")).digest()).decode("ascii")
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{_SCRIPT_HASH}'"
 )
 
 # Wording of each status on the page, in plain words rather than jargon.
@@ -87,5 +99,6 @@ def render(report: Report, *, refresh: int) -> str:
         "repositories": [_repository_view(repo, largest) for repo in repositories],
         "stale_hours": f"{report.stale_hours:g}",
         "critical_hours": f"{report.critical_hours:g}",
+        "script": _SCRIPT,
     }
     return _ENVIRONMENT.get_template(_TEMPLATE).render(**context)

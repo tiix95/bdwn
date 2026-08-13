@@ -21,11 +21,13 @@ from sys import exc_info
 from threading import Lock, Thread
 from time import monotonic
 from typing import Any
+from urllib.parse import parse_qs
 
 from bdwn_webui import __version__
 from bdwn_webui.config import Config
 from bdwn_webui.metrics import CONTENT_TYPE as METRICS_TYPE
 from bdwn_webui.metrics import render as render_metrics
+from bdwn_webui.page import CONTENT_SECURITY_POLICY
 from bdwn_webui.page import render as render_page
 from bdwn_webui.scan import Report, as_dict, scan
 
@@ -35,6 +37,11 @@ _LOGGER = getLogger("bdwn-webui")
 # within sane bounds whatever the configured TTL.
 _MIN_REFRESH = 30
 _MAX_REFRESH = 600
+
+# Floor between two scans forced from the refresh button, whatever the TTL.
+# Scanning is the only expensive thing this service does, so a held down
+# reload key must not turn into a disk hammer.
+_MIN_SCAN_INTERVAL = 10.0
 
 
 class ReportCache:
@@ -50,10 +57,18 @@ class ReportCache:
         self._report: Report | None = None
         self._stamp = 0.0
 
-    def get(self) -> Report:
+    def get(self, *, force: bool = False) -> Report:
+        """Return the cached report, or a fresh one when it is due.
+
+        force comes from the refresh button: it shortens the TTL down to the
+        floor, it does not remove it.
+        """
         with self._lock:
             report = self._report
-            if report is None or monotonic() - self._stamp >= self._config.cache_ttl:
+            ttl = float(self._config.cache_ttl)
+            if force:
+                ttl = min(_MIN_SCAN_INTERVAL, ttl)
+            if report is None or monotonic() - self._stamp >= ttl:
                 report = scan(self._config)
                 self._report = report
                 self._stamp = monotonic()
@@ -85,15 +100,18 @@ class _Handler(BaseHTTPRequestHandler):
         self._dispatch(with_body=False)
 
     def _dispatch(self, *, with_body: bool) -> None:
-        route = self.path.split("?", 1)[0].rstrip("/") or "/"
+        route, _, query = self.path.partition("?")
+        route = route.rstrip("/") or "/"
+        # /?refresh=1, sent by the refresh button of the page
+        forced = "refresh" in parse_qs(query)
         try:
             match route:
                 case "/":
-                    report = self.report_cache.get()
+                    report = self.report_cache.get(force=forced)
                     body = render_page(report, refresh=self.refresh_seconds).encode("utf-8")
                     self._send(HTTPStatus.OK, "text/html; charset=utf-8", body, with_body)
                 case "/api/status":
-                    payload = dumps(as_dict(self.report_cache.get()), indent=2) + "\n"
+                    payload = dumps(as_dict(self.report_cache.get(force=forced)), indent=2) + "\n"
                     self._send(
                         HTTPStatus.OK,
                         "application/json; charset=utf-8",
@@ -127,10 +145,9 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        # The page is self contained: no script, no image, no external asset.
-        self.send_header(
-            "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'"
-        )
+        # The page is self contained: no image, no external asset, and its only
+        # script is inlined and pinned by its hash.
+        self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
         self.end_headers()
         if with_body:
             self.wfile.write(body)
