@@ -23,6 +23,13 @@ def _label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
+def _labels(repo: Repository) -> str:
+    """Labels of one repository. Two jails can hold the same server name, so
+    the pair is what identifies a series.
+    """
+    return f'{{server="{_label(repo.name)}",root="{_label(repo.root)}"}}'
+
+
 def _metric(name: str, kind: str, description: str, samples: list[str]) -> list[str]:
     return [f"# HELP {name} {description}", f"# TYPE {name} {kind}", *samples]
 
@@ -31,10 +38,7 @@ def render(report: Report) -> str:
     """Return the whole report in the Prometheus text format."""
     lines: list[str] = []
     for name, kind, description, getter in _REPO_METRICS:
-        samples = [
-            f'{name}{{server="{_label(repo.name)}"}} {getter(repo)}'
-            for repo in report.repositories
-        ]
+        samples = [f"{name}{_labels(repo)} {getter(repo)}" for repo in report.repositories]
         lines += _metric(name, kind, description, samples)
 
     lines += _metric(
@@ -42,8 +46,7 @@ def render(report: Report) -> str:
         "gauge",
         "Time of the most recent snapshot, absent when there is none",
         [
-            f'bdwn_repo_last_snapshot_timestamp_seconds{{server="{_label(repo.name)}"}}'
-            f" {repo.last_snapshot:.0f}"
+            f"bdwn_repo_last_snapshot_timestamp_seconds{_labels(repo)} {repo.last_snapshot:.0f}"
             for repo in report.repositories
             if repo.last_snapshot is not None
         ],
@@ -53,26 +56,32 @@ def render(report: Report) -> str:
         "gauge",
         "Repository state, 1 on the current status of each server",
         [
-            f'bdwn_repo_status{{server="{_label(repo.name)}",status="{status}"}}'
-            f" {int(repo.status == status)}"
+            f'bdwn_repo_status{{server="{_label(repo.name)}",root="{_label(repo.root)}"'
+            f',status="{status}"}} {int(repo.status == status)}'
             for repo in report.repositories
             for status in Status
         ],
     )
 
-    if report.volume is not None:
-        volume = f'{{path="{_label(report.volume.path)}"}}'
+    # One sample per filesystem, but HELP and TYPE only once per metric name.
+    if report.volumes:
         lines += _metric(
             "bdwn_volume_size_bytes",
             "gauge",
-            "Size of the filesystem holding the repositories",
-            [f"bdwn_volume_size_bytes{volume} {report.volume.total_bytes}"],
+            "Size of a filesystem holding repositories",
+            [
+                f'bdwn_volume_size_bytes{{path="{_label(v.path)}"}} {v.total_bytes}'
+                for v in report.volumes
+            ],
         )
         lines += _metric(
             "bdwn_volume_free_bytes",
             "gauge",
-            "Free space on the filesystem holding the repositories",
-            [f"bdwn_volume_free_bytes{volume} {report.volume.free_bytes}"],
+            "Free space on a filesystem holding repositories",
+            [
+                f'bdwn_volume_free_bytes{{path="{_label(v.path)}"}} {v.free_bytes}'
+                for v in report.volumes
+            ],
         )
 
     lines += _metric(

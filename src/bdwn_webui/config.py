@@ -25,8 +25,10 @@ class ConfigError(Exception):
 class Config:
     """Runtime settings, with the defaults used when the file is absent."""
 
-    # Chroot jail holding one repository per backup client.
-    server_root: Path = Path("/backups/servers")
+    # Chroot jails holding one repository per backup client. Several of them
+    # when the repositories are spread over more than one filesystem, given
+    # space separated as the client config does for BACKUP_PATHS.
+    server_roots: tuple[Path, ...] = (Path("/backups/servers"),)
     # "unix:/path/to.sock" or "host:port".
     listen: str = "unix:/run/bdwn-webui/bdwn-webui.sock"
     # Mode applied to the unix socket once bound.
@@ -52,6 +54,14 @@ def _unquote(raw: str) -> str:
     # Bare word: stops at the first space or trailing comment, as the shell does.
     words = value.split("#", 1)[0].split()
     return words[0] if words else ""
+
+
+def _to_paths(value: str) -> tuple[Path, ...]:
+    """Split a space separated list of jails, keeping the order, without
+    duplicates (the same jail listed twice would show every repository twice).
+    """
+    paths = dict.fromkeys(Path(word) for word in value.split())
+    return tuple(paths)
 
 
 def _to_int(key: str, value: str, *, base: int = 10) -> int:
@@ -81,7 +91,7 @@ def parse(text: str) -> Config:
             continue
         match key:
             case "BDWN_SERVER_ROOT":
-                config = replace(config, server_root=Path(value))
+                config = replace(config, server_roots=_to_paths(value))
             case "BDWN_WEBUI_LISTEN":
                 config = replace(config, listen=value)
             case "BDWN_WEBUI_SOCKET_MODE":

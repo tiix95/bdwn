@@ -141,6 +141,7 @@ h1 span { color: var(--accent); }
 .tile p { margin: .6rem 0 0; font-size: 1.55rem; font-weight: 700; letter-spacing: .02em; }
 .tile .unit { font-size: .8rem; font-weight: 400; color: var(--dim); letter-spacing: .1em; }
 .tile.wide { grid-column: 1 / -1; }
+.tile.half { grid-column: span 2; }
 .tile.flag p { color: var(--stale); }
 .tile.clear p { color: var(--ok); }
 
@@ -171,6 +172,8 @@ tbody tr:hover td { background: var(--panel); }
 th.num, td.num { text-align: right; }
 .name { font-weight: 700; letter-spacing: .04em; }
 .lock { margin-left: .5rem; color: var(--accent); font-size: .68rem; letter-spacing: .12em; }
+/* Only rendered when more than one jail is configured. */
+.jail { color: var(--dim); font-size: .78rem; white-space: nowrap; }
 .err { display: block; margin-top: .25rem; color: var(--stale); font-size: .72rem; }
 
 /* Status is carried by the text, the colour only reinforces it. */
@@ -233,7 +236,12 @@ footer a:hover { color: var(--text); }
       <p class="sub">repository status // {{ hostname }}</p>
     </div>
     <dl class="meta">
-      <div><dt>jail</dt><dd>{{ server_root }}</dd></div>
+      <div>
+        <dt>{{ "jails" if show_root else "jail" }}</dt>
+        {% for root in server_roots %}
+        <dd>{{ root }}</dd>
+        {% endfor %}
+      </div>
       <div><dt>scanned</dt><dd>{{ generated }}</dd></div>
       <div><dt>scan time</dt><dd>{{ scan_seconds }} s</dd></div>
     </dl>
@@ -244,9 +252,9 @@ footer a:hover { color: var(--text); }
     </a>
   </header>
 
-  {% if error %}
-  <p class="alert">{{ error }}</p>
-  {% endif %}
+  {% for message in errors %}
+  <p class="alert">{{ message }}</p>
+  {% endfor %}
 
   <section class="tiles">
     <div class="tile">
@@ -265,9 +273,10 @@ footer a:hover { color: var(--text); }
       <h2>alerts</h2>
       <p>{{ alerts }}</p>
     </div>
-    {% if volume %}
-    <div class="tile wide">
-      <h2>volume</h2>
+    {% for volume in volumes %}
+    {# One tile per filesystem: full width alone, two per row otherwise #}
+    <div class="tile {{ 'wide' if volumes|length == 1 else 'half' }}">
+      <h2>volume{% if volumes|length > 1 %} :: {{ volume.path }}{% endif %}</h2>
       <p>{{ volume.free }}<span class="unit"> free</span></p>
       <div class="meter {{ volume.level }}">
         <i style="width: {{ volume.used_percent }}%"></i>
@@ -277,7 +286,7 @@ footer a:hover { color: var(--text); }
         <span>{{ volume.used_percent }}% of {{ volume.total }}</span>
       </div>
     </div>
-    {% endif %}
+    {% endfor %}
   </section>
 
   <div class="wrap">
@@ -285,6 +294,9 @@ footer a:hover { color: var(--text); }
       <thead>
         <tr>
           <th>server</th>
+          {% if show_root %}
+          <th>jail</th>
+          {% endif %}
           <th>status</th>
           <th class="num">size</th>
           <th class="num">snapshots</th>
@@ -301,6 +313,9 @@ footer a:hover { color: var(--text); }
             {% if repo.locks %}<span class="lock">[busy]</span>{% endif %}
             {% if repo.error %}<span class="err">{{ repo.error }}</span>{% endif %}
           </td>
+          {% if show_root %}
+          <td class="jail">{{ repo.root }}</td>
+          {% endif %}
           <td><span class="pill s-{{ repo.status }}">{{ repo.label }}</span></td>
           <td class="num bar">
             <i style="width: {{ repo.bar }}%"></i>{{ repo.size }}
@@ -311,7 +326,11 @@ footer a:hover { color: var(--text); }
           <td class="num">{{ repo.age }}</td>
         </tr>
         {% else %}
-        <tr><td class="empty" colspan="7">no repository under {{ server_root }}</td></tr>
+        <tr>
+          <td class="empty" colspan="{{ 8 if show_root else 7 }}">
+            no repository under {{ server_roots | join(", ") }}
+          </td>
+        </tr>
         {% endfor %}
       </tbody>
     </table>

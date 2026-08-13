@@ -13,7 +13,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 
 from bdwn_webui.format import human_age, human_bytes, local_time
-from bdwn_webui.scan import Report, Repository, Status
+from bdwn_webui.scan import Report, Repository, Status, Volume
 
 _TEMPLATE = "status.html.j2"
 _TEMPLATES = Path(__file__).parent / "templates"
@@ -50,6 +50,7 @@ _ALERTS = (Status.LATE, Status.STALE, Status.UNREADABLE)
 def _repository_view(repo: Repository, largest: int) -> dict[str, Any]:
     return {
         "name": repo.name,
+        "root": repo.root,
         "status": str(repo.status),
         "label": _LABELS[repo.status],
         "size": human_bytes(repo.size_bytes),
@@ -64,12 +65,10 @@ def _repository_view(repo: Repository, largest: int) -> dict[str, Any]:
     }
 
 
-def _volume_view(report: Report) -> dict[str, Any] | None:
-    volume = report.volume
-    if volume is None:
-        return None
+def _volume_view(volume: Volume) -> dict[str, Any]:
     percent = round(volume.used_percent, 1)
     return {
+        "path": volume.path,
         "total": human_bytes(volume.total_bytes),
         "used": human_bytes(volume.used_bytes),
         "free": human_bytes(volume.free_bytes),
@@ -80,22 +79,26 @@ def _volume_view(report: Report) -> dict[str, Any] | None:
 
 def render(report: Report, *, refresh: int) -> str:
     """Return the full status page for a report."""
-    repositories = sorted(report.repositories, key=lambda r: (_SEVERITY[r.status], r.name))
+    repositories = sorted(
+        report.repositories, key=lambda r: (_SEVERITY[r.status], r.name, r.root)
+    )
     largest = max((repo.size_bytes for repo in report.repositories), default=0)
     context = {
         "hostname": gethostname(),
-        "server_root": report.server_root,
+        "server_roots": report.server_roots,
+        # The jail of each repository only matters once there are several.
+        "show_root": len(report.server_roots) > 1,
         "generated": local_time(report.generated_at),
         "scan_seconds": f"{report.scan_seconds:.2f}",
         "refresh": refresh,
-        "error": report.error,
+        "errors": report.errors,
         "total_size": human_bytes(report.total_bytes),
         "alerts": report.count(*_ALERTS),
         "totals": {
             "repositories": len(report.repositories),
             "ok": report.count(Status.OK),
         },
-        "volume": _volume_view(report),
+        "volumes": [_volume_view(volume) for volume in report.volumes],
         "repositories": [_repository_view(repo, largest) for repo in repositories],
         "stale_hours": f"{report.stale_hours:g}",
         "critical_hours": f"{report.critical_hours:g}",

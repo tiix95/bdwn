@@ -333,9 +333,10 @@ the unit even if `bdwn-export` is killed), `PrivateNetwork=yes`,
 ## Status web UI
 
 `bdwn-webui` serves one read-only page listing every repository under the
-jail: state, size, number of snapshots, date of the last one. It is meant to
-answer the only question a backup server is really asked: did every client
-push last night, and how much does it weigh.
+jail, or under each jail when there are several: state, size, number of
+snapshots, date of the last one. It is meant to answer the only question a
+backup server is really asked: did every client push last night, and how much
+does it weigh.
 
 It never opens a repository. The repositories are encrypted and this server
 holds no passphrase, so everything on the page comes from the filesystem:
@@ -346,7 +347,7 @@ holds no passphrase, so everything on the page comes from the filesystem:
 | Last backup          | mtime of the newest file in `<jail>/<server>/snapshots/` |
 | Number of snapshots  | Number of files in `<jail>/<server>/snapshots/`         |
 | `[busy]` marker      | A file in `<jail>/<server>/locks/`, so restic is running (or a lock was left behind by a crash) |
-| Volume usage         | `statvfs` on the jail                                   |
+| Volume usage         | `statvfs` on each jail, one tile per filesystem          |
 | Free space           | Same                                                    |
 
 What it can **not** show, by construction: the list of backed up files, the
@@ -364,6 +365,32 @@ Each repository gets one of these states:
 | `no snapshot` | Repository initialised, no snapshot in it yet                   |
 | `no repo`     | User declared by `bdwn-setup-backup-user`, restic never ran     |
 | `error`       | The directory could not be read                                 |
+
+### Several jails
+
+Repositories spread over more than one filesystem are listed on the same
+page: give `BDWN_SERVER_ROOT` every jail, space separated, exactly as the
+client config lists `BACKUP_PATHS`.
+
+```sh
+BDWN_SERVER_ROOT="/backups/servers /mnt/tank/servers"
+```
+
+What changes with more than one jail:
+
+- The table gains a `jail` column, and the header lists every configured jail.
+- Two jails may hold a repository of the **same server name**: they are two
+  distinct lines, told apart by their jail. In `/metrics` they are two
+  distinct series, since every repository metric carries both a `server` and
+  a `root` label.
+- One volume tile per **filesystem**, not per jail: two jails on the same
+  filesystem are reported once.
+- A jail that cannot be read (unmounted disk, typo) shows as a red banner at
+  the top of the page and does not stop the others from being scanned.
+
+Note that `bdwn-export` still mirrors a single jail per run, the one in
+`BDWN_SERVER_ROOT` from `/etc/bdwn/bdwn-export.conf`. With several jails, run
+it once per jail with `BDWN_EXPORT_CONFIG` pointing at a config file per jail.
 
 ### Start it and reach it
 
@@ -478,7 +505,13 @@ Exported metrics: `bdwn_repo_size_bytes`, `bdwn_repo_files`,
 `bdwn_repo_last_snapshot_timestamp_seconds`, `bdwn_repo_status`
 (`1` on the current status of each server), `bdwn_volume_size_bytes`,
 `bdwn_volume_free_bytes`, `bdwn_scan_duration_seconds` and
-`bdwn_scan_timestamp_seconds`. All repository metrics carry a `server` label.
+`bdwn_scan_timestamp_seconds`. All repository metrics carry a `server` and a
+`root` label (the jail it was found in), the volume ones a `path` label, one
+sample per filesystem.
+
+The JSON of `/api/status` holds `server_roots`, `volumes` and `errors` as
+lists, and each repository carries its `root`. A scraper written against the
+single-jail shape (`server_root`, `volume`, `error`) needs updating.
 
 ### Configuration
 
@@ -488,7 +521,7 @@ holds no passphrase.
 
 | Variable                   | Default                              | Meaning                                                    |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------- |
-| `BDWN_SERVER_ROOT`         | `/backups/servers`                   | Chroot jail holding the repositories. Must match `CHROOT_BASE` if you changed it. |
+| `BDWN_SERVER_ROOT`         | `/backups/servers`                   | Chroot jail holding the repositories, or several of them separated by spaces. Must match `CHROOT_BASE` if you changed it. |
 | `BDWN_WEBUI_LISTEN`        | `unix:/run/bdwn-webui/bdwn-webui.sock` | Unix socket (`unix:/path`) or TCP address (`host:port`).  |
 | `BDWN_WEBUI_SOCKET_MODE`   | `0660`                               | Mode of the unix socket once bound.                        |
 | `BDWN_WEBUI_CACHE_TTL`     | `300`                                | Seconds a scan is kept before being redone. Also the reload interval of the page. |

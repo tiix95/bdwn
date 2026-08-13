@@ -15,7 +15,7 @@ would walk the whole filesystem and report a nonsense size.
 
 from dataclasses import dataclass
 from enum import StrEnum
-from os import DirEntry, scandir, statvfs
+from os import DirEntry, scandir, stat, statvfs
 from pathlib import Path
 from re import compile as re_compile
 from time import monotonic, time
@@ -45,6 +45,9 @@ class Repository:
     """One backup client's repository, as seen from the filesystem."""
 
     name: str
+    # Jail it was found in. Two jails may hold a repository of the same name,
+    # so a repository is only identified by the pair.
+    root: str
     status: Status
     size_bytes: int
     files: int
@@ -78,12 +81,14 @@ class Report:
 
     generated_at: float
     scan_seconds: float
-    server_root: str
+    server_roots: tuple[str, ...]
     stale_hours: float
     critical_hours: float
     repositories: tuple[Repository, ...]
-    volume: Volume | None = None
-    error: str | None = None
+    # One entry per distinct filesystem behind the jails, not per jail.
+    volumes: tuple[Volume, ...] = ()
+    # Jails that could not be read at all, one message each.
+    errors: tuple[str, ...] = ()
 
     @property
     def total_bytes(self) -> int:
@@ -149,7 +154,7 @@ def _status(snapshots: int, last: float | None, config: Config) -> Status:
     return Status.LATE if age <= config.critical_hours * _HOUR else Status.STALE
 
 
-def _scan_repository(path: Path, config: Config) -> Repository:
+def _scan_repository(path: Path, root: Path, config: Config) -> Repository:
     try:
         initialised = (path / "config").is_file()
         snapshots, last = _snapshots(path / "snapshots")
@@ -158,6 +163,7 @@ def _scan_repository(path: Path, config: Config) -> Repository:
     except OSError as exc:
         return Repository(
             name=path.name,
+            root=str(root),
             status=Status.UNREADABLE,
             size_bytes=0,
             files=0,
@@ -169,6 +175,7 @@ def _scan_repository(path: Path, config: Config) -> Repository:
     status = _status(snapshots, last, config) if initialised else Status.UNINITIALIZED
     return Repository(
         name=path.name,
+        root=str(root),
         status=status,
         size_bytes=size,
         files=files,
@@ -188,13 +195,15 @@ def _repository_dirs(root: Path) -> list[Path]:
         return sorted((Path(entry.path) for entry in entries if keep(entry)), key=lambda p: p.name)
 
 
-def _volume(root: Path) -> Volume | None:
+def _volume(root: Path) -> tuple[int, Volume] | None:
+    """Filesystem holding a jail, with the device id used to deduplicate it."""
     try:
         stats = statvfs(root)
+        device = stat(root).st_dev
     except OSError:
         return None
     total = stats.f_blocks * stats.f_frsize
-    return Volume(
+    return device, Volume(
         path=str(root),
         total_bytes=total,
         used_bytes=total - stats.f_bfree * stats.f_frsize,
@@ -203,24 +212,33 @@ def _volume(root: Path) -> Volume | None:
 
 
 def scan(config: Config) -> Report:
-    """Walk every repository under the jail and build a full report."""
+    """Walk every repository of every jail and build a full report."""
     started = monotonic()
-    root = config.server_root
-    try:
-        directories = _repository_dirs(root)
-        error = None
-    except OSError as exc:
-        directories = []
-        error = f"cannot read {root}: {exc}"
+    repositories: list[Repository] = []
+    volumes: dict[int, Volume] = {}
+    errors: list[str] = []
+    for root in config.server_roots:
+        try:
+            directories = _repository_dirs(root)
+        except OSError as exc:
+            # One unreadable jail (unmounted disk, typo) must not hide the
+            # repositories of the others.
+            errors.append(f"cannot read {root}: {exc}")
+            continue
+        repositories += [_scan_repository(path, root, config) for path in directories]
+        found = _volume(root)
+        # Several jails often sit on the same filesystem: report it once.
+        if found is not None and found[0] not in volumes:
+            volumes[found[0]] = found[1]
     return Report(
         generated_at=time(),
         scan_seconds=monotonic() - started,
-        server_root=str(root),
+        server_roots=tuple(str(root) for root in config.server_roots),
         stale_hours=config.stale_hours,
         critical_hours=config.critical_hours,
-        repositories=tuple(_scan_repository(path, config) for path in directories),
-        volume=_volume(root),
-        error=error,
+        repositories=tuple(repositories),
+        volumes=tuple(volumes.values()),
+        errors=tuple(errors),
     )
 
 
@@ -229,10 +247,10 @@ def as_dict(report: Report) -> dict[str, Any]:
     return {
         "generated_at": report.generated_at,
         "scan_seconds": round(report.scan_seconds, 3),
-        "server_root": report.server_root,
+        "server_roots": list(report.server_roots),
         "stale_hours": report.stale_hours,
         "critical_hours": report.critical_hours,
-        "error": report.error,
+        "errors": list(report.errors),
         "totals": {
             "repositories": len(report.repositories),
             "size_bytes": report.total_bytes,
@@ -241,18 +259,20 @@ def as_dict(report: Report) -> dict[str, Any]:
             "stale": report.count(Status.STALE),
             "other": report.count(Status.EMPTY, Status.UNINITIALIZED, Status.UNREADABLE),
         },
-        "volume": None
-        if report.volume is None
-        else {
-            "path": report.volume.path,
-            "total_bytes": report.volume.total_bytes,
-            "used_bytes": report.volume.used_bytes,
-            "free_bytes": report.volume.free_bytes,
-            "used_percent": round(report.volume.used_percent, 1),
-        },
+        "volumes": [
+            {
+                "path": volume.path,
+                "total_bytes": volume.total_bytes,
+                "used_bytes": volume.used_bytes,
+                "free_bytes": volume.free_bytes,
+                "used_percent": round(volume.used_percent, 1),
+            }
+            for volume in report.volumes
+        ],
         "repositories": [
             {
                 "name": repo.name,
+                "root": repo.root,
                 "status": str(repo.status),
                 "size_bytes": repo.size_bytes,
                 "files": repo.files,
