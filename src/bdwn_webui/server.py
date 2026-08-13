@@ -17,6 +17,7 @@ from signal import SIGINT, SIGTERM, signal
 from socket import AF_UNIX
 from socketserver import TCPServer
 from stat import S_ISSOCK
+from sys import exc_info
 from threading import Lock, Thread
 from time import monotonic
 from typing import Any
@@ -69,6 +70,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     report_cache: ReportCache
     refresh_seconds: int
+    close_connection: bool  # set by BaseHTTPRequestHandler outside __init__
 
     server_version = f"bdwn-webui/{__version__}"
     sys_version = ""  # do not advertise the Python version
@@ -103,10 +105,19 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send(HTTPStatus.OK, METRICS_TYPE, body, with_body)
                 case _:
                     self.send_error(HTTPStatus.NOT_FOUND, "no such page")
+        except (ConnectionError, TimeoutError) as exc:
+            # Client gone before the answer was written: a browser reloading
+            # the page, or a proxy giving up. There is nothing left to answer
+            # on, and writing an error would raise the same thing again.
+            _LOGGER.debug("client left during %s: %s", route, exc)
+            self.close_connection = True
         except Exception:  # pylint: disable=broad-except
             # A broken scan must not kill the server: log it, answer 500.
             _LOGGER.exception("request failed: %s", route)
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "report generation failed")
+            try:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "report generation failed")
+            except (ConnectionError, TimeoutError):
+                self.close_connection = True
 
     def _send(self, status: HTTPStatus, content_type: str, body: bytes, with_body: bool) -> None:
         self.send_response(status)
@@ -137,8 +148,30 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
         _LOGGER.info("%s %s", self.address_string(), format % args)
 
+    def log_error(self, format: str, *args: Any) -> None:  # pylint: disable=redefined-builtin
+        # Mostly idle keep-alive connections hitting the handler timeout, which
+        # is routine. Real failures are logged where they happen, and the
+        # status code still shows up in the access line above.
+        _LOGGER.debug("%s %s", self.address_string(), format % args)
 
-class _UnixHTTPServer(ThreadingHTTPServer):
+
+class _QuietErrors:
+    """Keeps a client hanging up out of the journal.
+
+    socketserver prints a full traceback for any exception escaping a handler,
+    which fills the journal with noise every time a browser or a proxy drops
+    the connection.
+    """
+
+    def handle_error(self, _request: Any, _client_address: Any) -> None:
+        error = exc_info()[1]
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            _LOGGER.debug("connection dropped: %s", error)
+            return
+        _LOGGER.exception("unhandled error while serving a request")
+
+
+class _UnixHTTPServer(_QuietErrors, ThreadingHTTPServer):
     """ThreadingHTTPServer bound to a unix socket instead of a TCP port."""
 
     address_family = AF_UNIX
@@ -174,6 +207,10 @@ class _UnixHTTPServer(ThreadingHTTPServer):
             pass
 
 
+class _TCPHTTPServer(_QuietErrors, ThreadingHTTPServer):
+    """Same server on a TCP address, with the same quiet error handling."""
+
+
 def _tcp_address(listen: str) -> tuple[str, int]:
     host, _, port = listen.rpartition(":")
     if not host or not port.isdigit():
@@ -189,7 +226,7 @@ def _build_server(config: Config, handler: type[_Handler]) -> ThreadingHTTPServe
         _LOGGER.info("listening on unix socket %s (mode %04o)", path, config.socket_mode)
         return server
     address = _tcp_address(config.listen)
-    server = ThreadingHTTPServer(address, handler)
+    server = _TCPHTTPServer(address, handler)
     _LOGGER.info("listening on http://%s:%d/", *address)
     return server
 
