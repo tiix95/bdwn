@@ -18,3 +18,5 @@ __pycache__/
 
 # Local tooling
 .claude/settings.local.json
+
+Makefile
