@@ -12,8 +12,8 @@ SSH_DIR="${DATA_DIR}/.ssh"
 # bdwn/backup-server-ip, bdwn/backup-server-port): preseed the values with
 # debconf-set-selections before install (see README, "Package configuration").
 BACKUP_SERVER=dagobah
-BACKUP_SERVER_IP=192.168.7.104
-BACKUP_SERVER_PORT=14789
+BACKUP_SERVER_IP=192.168.1.1
+BACKUP_SERVER_PORT=22
 
 if [ -e /usr/share/debconf/confmodule ]; then
     . /usr/share/debconf/confmodule
@@ -98,7 +98,7 @@ case "$1" in
         echo "  3. Test a backup (as root): bdwn backup"
         echo "  4. Enable the daily timer: systemctl enable --now bdwn.timer"
         echo "  5. Add the following nftables rule :"
-        echo "    oifname wg-un1verse ip daddr $BACKUP_SERVER_IP tcp dport $BACKUP_SERVER_PORT meta skuid $APP_USER counter accept comment \"backup-$BACKUP_SERVER\""
+        echo "    oifname eth0 ip daddr $BACKUP_SERVER_IP tcp dport $BACKUP_SERVER_PORT meta skuid $APP_USER counter accept comment \"backup-$BACKUP_SERVER\""
         echo ""
         ;;
 
