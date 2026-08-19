@@ -5,6 +5,10 @@
 # systemd timer as the unprivileged 'bdwn' user, but usable by hand for
 # maintenance (snapshots, list, restore, check, arbitrary restic commands).
 #
+# 'bdwn zfs-sync' is the one command that leaves restic aside: it replicates
+# a local ZFS dataset onto a dataset of a remote server with 'zfs send' over
+# SSH, driven by its own timer (see BDWN_ZFS_SYNC_* in the config).
+#
 # 'set -f' disables pathname expansion: BDWN_EXCLUDES holds restic glob
 # patterns (e.g. /home/*/.cache) that must reach restic literally, and we
 # rely on word-splitting only, never on shell globbing.
@@ -18,31 +22,37 @@ die() { echo "bdwn: $*" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$CONFIG_FILE"
 
-: "${BDWN_REPO:?BDWN_REPO not set in $CONFIG_FILE}"
-: "${RESTIC_PASSWORD:?RESTIC_PASSWORD not set in $CONFIG_FILE}"
-: "${BACKUP_PATHS:?BACKUP_PATHS not set in $CONFIG_FILE}"
-
-# Hand restic what it expects through the environment.
-export RESTIC_REPOSITORY="$BDWN_REPO"
-export RESTIC_PASSWORD
-export RESTIC_CACHE_DIR="${BDWN_CACHE_DIR:-/var/cache/bdwn}"
-
-# When run as root (the systemd service), restic reads BACKUP_PATHS with full
-# privileges but the SSH connection is dropped to the unprivileged 'bdwn'
-# user via runuser: root never talks to the network, and bdwn's ssh config,
-# key and known_hosts are used explicitly. The passphrase is stripped from
-# the environment so the network-facing ssh process never sees it.
 SSH_DIR="/var/lib/bdwn/.ssh"
 RESTIC_SFTP_OPT=""
-if [ "$(id -u)" = "0" ]; then
-    case "$BDWN_REPO" in
-    sftp:*)
-        SSH_HOST="${BDWN_REPO#sftp:}"
-        SSH_HOST="${SSH_HOST%%:*}"
-        RESTIC_SFTP_OPT="sftp.command=/usr/sbin/runuser -u bdwn -- env -u RESTIC_PASSWORD -u RESTIC_REPOSITORY ssh -F ${SSH_DIR}/config -o UserKnownHostsFile=${SSH_DIR}/known_hosts ${SSH_HOST} -s sftp"
-        ;;
-    esac
-fi
+
+# Check the repository settings and hand restic what it expects through the
+# environment. Called for every command but 'zfs-sync', which replicates a
+# ZFS dataset over SSH and never opens the repository.
+init_restic() {
+    : "${BDWN_REPO:?BDWN_REPO not set in $CONFIG_FILE}"
+    : "${RESTIC_PASSWORD:?RESTIC_PASSWORD not set in $CONFIG_FILE}"
+    : "${BACKUP_PATHS:?BACKUP_PATHS not set in $CONFIG_FILE}"
+
+    export RESTIC_REPOSITORY="$BDWN_REPO"
+    export RESTIC_PASSWORD
+    export RESTIC_CACHE_DIR="${BDWN_CACHE_DIR:-/var/cache/bdwn}"
+
+    # When run as root (the systemd service), restic reads BACKUP_PATHS with
+    # full privileges but the SSH connection is dropped to the unprivileged
+    # 'bdwn' user via runuser: root never talks to the network, and bdwn's ssh
+    # config, key and known_hosts are used explicitly. The passphrase is
+    # stripped from the environment so the network-facing ssh process never
+    # sees it.
+    if [ "$(id -u)" = "0" ]; then
+        case "$BDWN_REPO" in
+        sftp:*)
+            SSH_HOST="${BDWN_REPO#sftp:}"
+            SSH_HOST="${SSH_HOST%%:*}"
+            RESTIC_SFTP_OPT="sftp.command=/usr/sbin/runuser -u bdwn -- env -u RESTIC_PASSWORD -u RESTIC_REPOSITORY ssh -F ${SSH_DIR}/config -o UserKnownHostsFile=${SSH_DIR}/known_hosts ${SSH_HOST} -s sftp"
+            ;;
+        esac
+    fi
+}
 
 # All restic invocations go through this wrapper so the privilege-drop
 # option is applied consistently.
@@ -212,14 +222,154 @@ cmd_export() {
     echo "bdwn: export complete, restore with: restic -r $dest restore latest --target DIR"
 }
 
-case "${1:-backup}" in
+# Replicate a local ZFS dataset onto a dataset of a remote server, with
+# 'zfs send' piped into 'zfs receive' over SSH. Nothing goes through restic:
+# the remote side holds real ZFS data, not an encrypted repository, so the
+# remote pool is the place to encrypt it if needed.
+#
+# Every run snapshots the dataset under <prefix>-<UTC timestamp> and sends it
+# incrementally from the previous sync snapshot, or in full when the two sides
+# share none (first run, remote dataset recreated).
+
+# Run a command on the remote server. As root the SSH client is dropped to the
+# unprivileged BDWN_ZFS_SYNC_LOCAL_USER, like the SFTP repository does: the
+# process talking to the network never runs as root. RESTIC_PASSWORD is only
+# exported by init_restic, which zfs-sync does not call, so it stays out of
+# the environment of that ssh process.
+zfs_sync_ssh() {
+    if [ "$(id -u)" = "0" ]; then
+        # shellcheck disable=SC2086
+        /usr/sbin/runuser -u "$ZFS_SYNC_LOCAL_USER" -- \
+            ssh $ZFS_SYNC_SSH_ARGS "$ZFS_SYNC_TARGET" "$@"
+    else
+        # SC2029: the remote command is built here on purpose, from the
+        # configured dataset and zfs path, and must expand locally.
+        # shellcheck disable=SC2086,SC2029
+        ssh $ZFS_SYNC_SSH_ARGS "$ZFS_SYNC_TARGET" "$@"
+    fi
+}
+
+# Sync snapshots of the dataset, oldest first. The first run has none, which
+# is not an error, hence the '|| true' on the empty grep.
+zfs_sync_snapshots() {
+    zfs list -H -o name -t snapshot -s creation -d 1 "$ZFS_SYNC_LOCAL" \
+        | grep -F "@${ZFS_SYNC_PREFIX}-" || true
+}
+
+cmd_zfs_sync() {
+    command -v zfs >/dev/null 2>&1 || die "zfs is not installed (zfsutils-linux)"
+
+    ZFS_SYNC_LOCAL="${BDWN_ZFS_SYNC_LOCAL_DATASET:?BDWN_ZFS_SYNC_LOCAL_DATASET not set in $CONFIG_FILE}"
+    ZFS_SYNC_REMOTE="${BDWN_ZFS_SYNC_REMOTE_DATASET:?BDWN_ZFS_SYNC_REMOTE_DATASET not set in $CONFIG_FILE}"
+    ZFS_SYNC_HOST="${BDWN_ZFS_SYNC_HOST:?BDWN_ZFS_SYNC_HOST not set in $CONFIG_FILE}"
+    ZFS_SYNC_LOCAL_USER="${BDWN_ZFS_SYNC_LOCAL_USER:-bdwn}"
+    ZFS_SYNC_PREFIX="${BDWN_ZFS_SYNC_SNAP_PREFIX:-bdwn-sync}"
+    ZFS_SYNC_KEEP="${BDWN_ZFS_SYNC_KEEP:-3}"
+    ZFS_SYNC_REMOTE_ZFS="${BDWN_ZFS_SYNC_REMOTE_ZFS:-zfs}"
+    ZFS_SYNC_RECV_OPTS="${BDWN_ZFS_SYNC_RECV_OPTS:--u -F}"
+    ZFS_SYNC_SSH_DIR="${BDWN_ZFS_SYNC_SSH_DIR:-/var/lib/bdwn/.ssh}"
+
+    # At least one snapshot must survive the pruning: it is the base of the
+    # next incremental stream.
+    case "$ZFS_SYNC_KEEP" in
+    '' | *[!0-9]*) die "invalid BDWN_ZFS_SYNC_KEEP: $ZFS_SYNC_KEEP (positive integer)" ;;
+    esac
+    [ "$ZFS_SYNC_KEEP" -ge 1 ] || die "BDWN_ZFS_SYNC_KEEP must be at least 1"
+
+    # Recursive by default: children of the dataset are snapshotted and sent
+    # along, and the remote copy mirrors the whole tree.
+    case "${BDWN_ZFS_SYNC_RECURSIVE:-yes}" in
+    yes) ZFS_SNAP_OPT="-r"; ZFS_SEND_OPT="-R"; ZFS_DESTROY_OPT="-r" ;;
+    no)  ZFS_SNAP_OPT=""; ZFS_SEND_OPT=""; ZFS_DESTROY_OPT="" ;;
+    *)   die "invalid BDWN_ZFS_SYNC_RECURSIVE: ${BDWN_ZFS_SYNC_RECURSIVE:-} (yes or no)" ;;
+    esac
+
+    [ -r "$ZFS_SYNC_SSH_DIR/config" ] || die "SSH config not found or not readable: $ZFS_SYNC_SSH_DIR/config"
+    ZFS_SYNC_SSH_ARGS="-F $ZFS_SYNC_SSH_DIR/config -o UserKnownHostsFile=$ZFS_SYNC_SSH_DIR/known_hosts -o BatchMode=yes"
+    ZFS_SYNC_SSH_ARGS="$ZFS_SYNC_SSH_ARGS${BDWN_ZFS_SYNC_PORT:+ -p $BDWN_ZFS_SYNC_PORT}"
+    ZFS_SYNC_SSH_ARGS="$ZFS_SYNC_SSH_ARGS${BDWN_ZFS_SYNC_SSH_KEY:+ -i $BDWN_ZFS_SYNC_SSH_KEY -o IdentitiesOnly=yes}"
+    ZFS_SYNC_SSH_ARGS="$ZFS_SYNC_SSH_ARGS ${BDWN_ZFS_SYNC_SSH_OPTS:-}"
+    ZFS_SYNC_TARGET="${BDWN_ZFS_SYNC_SSH_USER:+${BDWN_ZFS_SYNC_SSH_USER}@}${ZFS_SYNC_HOST}"
+
+    zfs list -H -o name "$ZFS_SYNC_LOCAL" >/dev/null 2>&1 || die "unknown ZFS dataset: $ZFS_SYNC_LOCAL"
+
+    # Base of the incremental stream: the last sync snapshot, provided the
+    # remote still holds it. Anything else means the two sides share no common
+    # point and only a full stream can be received.
+    base=""
+    last=$(zfs_sync_snapshots | tail -n 1)
+    if [ -n "$last" ]; then
+        remote_snap="${ZFS_SYNC_REMOTE}@${last#*@}"
+        if zfs_sync_ssh "$ZFS_SYNC_REMOTE_ZFS list -H -o name -t snapshot $remote_snap" >/dev/null 2>&1; then
+            base="$last"
+        else
+            echo "bdwn: $remote_snap missing on $ZFS_SYNC_HOST, falling back to a full stream"
+        fi
+    fi
+
+    snap="${ZFS_SYNC_LOCAL}@${ZFS_SYNC_PREFIX}-$(date -u +%Y%m%dT%H%M%SZ)"
+    echo "bdwn: snapshotting $snap"
+    # shellcheck disable=SC2086
+    zfs snapshot $ZFS_SNAP_OPT "$snap"
+
+    if [ -n "$base" ]; then
+        echo "bdwn: sending $snap incrementally from ${base#*@} to ${ZFS_SYNC_TARGET}:${ZFS_SYNC_REMOTE}"
+    else
+        echo "bdwn: sending $snap in full to ${ZFS_SYNC_TARGET}:${ZFS_SYNC_REMOTE}"
+    fi
+
+    # 'set -o pipefail' is not POSIX, so the exit status of 'zfs send' is
+    # written to a file: a truncated stream fails the receive too, but the
+    # status tells which side actually broke.
+    send_status_file=$(mktemp)
+    recv_status=0
+    # shellcheck disable=SC2086
+    { zfs send $ZFS_SEND_OPT ${BDWN_ZFS_SYNC_SEND_OPTS:-} ${base:+-I $base} "$snap"
+      echo $? > "$send_status_file"
+    } | zfs_sync_ssh "$ZFS_SYNC_REMOTE_ZFS receive $ZFS_SYNC_RECV_OPTS $ZFS_SYNC_REMOTE" || recv_status=$?
+    send_status=$(cat "$send_status_file")
+    rm -f "$send_status_file"
+
+    if [ "$send_status" != 0 ] || [ "$recv_status" != 0 ]; then
+        # The remote never got this snapshot. Keeping it would make the next
+        # run pick it as an incremental base the remote cannot match, and fall
+        # back to a full stream; dropping it keeps the next run incremental.
+        # shellcheck disable=SC2086
+        zfs destroy $ZFS_DESTROY_OPT "$snap"
+        die "replication failed (zfs send exit $send_status, zfs receive exit $recv_status)"
+    fi
+
+    # Older sync snapshots are only useful as incremental bases, and the remote
+    # keeps its own copies of them.
+    for old in $(zfs_sync_snapshots | head -n "-$ZFS_SYNC_KEEP"); do
+        echo "bdwn: destroying old sync snapshot $old"
+        # shellcheck disable=SC2086
+        zfs destroy $ZFS_DESTROY_OPT "$old"
+    done
+
+    echo "bdwn: replication of $ZFS_SYNC_LOCAL done"
+}
+
+COMMAND="${1:-backup}"
+if [ $# -gt 0 ]; then
+    shift
+fi
+
+# zfs-sync is the only command that does not talk to the repository, so it is
+# also the only one that runs without the restic settings being configured.
+if [ "$COMMAND" != "zfs-sync" ]; then
+    init_restic
+fi
+
+case "$COMMAND" in
     backup)    cmd_backup ;;
     init)      ensure_repo ;;
-    snapshots) shift; run_restic snapshots "$@" ;;
-    list)      shift; cmd_list "$@" ;;
-    restore)   shift; cmd_restore "$@" ;;
-    export)    shift; cmd_export "$@" ;;
-    check)     shift; run_restic check "$@" ;;
-    restic)    shift; run_restic "$@" ;;
-    *)         die "unknown command: $1 (use: backup|init|snapshots|list|restore|export|check|restic)" ;;
+    snapshots) run_restic snapshots "$@" ;;
+    list)      cmd_list "$@" ;;
+    restore)   cmd_restore "$@" ;;
+    export)    cmd_export "$@" ;;
+    zfs-sync)  cmd_zfs_sync ;;
+    check)     run_restic check "$@" ;;
+    restic)    run_restic "$@" ;;
+    *)         die "unknown command: $COMMAND (use: backup|init|snapshots|list|restore|export|zfs-sync|check|restic)" ;;
 esac

@@ -9,7 +9,9 @@ runs the backup as root with a reduced capability set (so any path can be read),
 dropping privileges to the unprivileged `bdwn` user for the SSH/SFTP connection,
 made with a dedicated key. Retention (daily/weekly/monthly) is applied
 automatically after each run. ZFS pools/datasets/volumes can optionally be
-exported with `zfs send` and included in the backup. A local repository can be
+exported with `zfs send` and included in the backup, or replicated straight
+onto a dataset of a remote ZFS server with `bdwn zfs-sync` and its own timer,
+see [ZFS replication](#zfs-replication-bdwn-zfs-sync). A local repository can be
 mirrored onto an external disk with `bdwn export`, see
 [Export to an external device](#export-to-an-external-device). An optional companion
 package, `bdwn-libvirt`, adds cold backups of libvirt VMs into the same
@@ -31,7 +33,8 @@ automatically on install:
 
 Optional (declared as a suggestion, not installed automatically):
 
-- `zfsutils-linux` - only needed for [ZFS backup](#zfs-backup)
+- `zfsutils-linux` - only needed for [ZFS backup](#zfs-backup) and
+  [ZFS replication](#zfs-replication-bdwn-zfs-sync)
 
 The `bdwn-libvirt` companion package additionally depends on `libvirt-clients`
 and `qemu-utils`, both pulled in automatically when installing `bdwn-libvirt`.
@@ -288,6 +291,134 @@ To restore, fetch the dump from the repository, then feed it to `zfs receive`:
 ```sh
 bdwn restore --target /tmp/restore /var/backups/bdwn/zfs
 zfs receive tank/vms/disk1 < /tmp/restore/var/backups/bdwn/zfs/tank_vms_disk1.zfs
+```
+
+## ZFS replication (bdwn zfs-sync)
+
+`bdwn zfs-sync` replicates a local ZFS dataset onto a dataset of a remote
+server with `zfs send` piped into `zfs receive` over SSH. It is the one command
+that leaves restic aside: the target is a real ZFS dataset, not an encrypted
+repository, so it is independent of `BDWN_REPO` and `RESTIC_PASSWORD` and works
+on a machine where they are not even configured.
+
+Use it when the backup target is a ZFS pool and you want a directly usable
+copy (snapshots browsable, rollback, `zfs clone`). Use
+[ZFS backup](#zfs-backup) instead when you want the datasets inside the
+encrypted restic repository.
+
+Each run:
+
+1. Lists the sync snapshots of the dataset and asks the remote server whether
+   it still holds the most recent one.
+2. Snapshots the dataset as `<prefix>-<UTC timestamp>` (`bdwn-sync-20260819T031500Z`
+   by default), recursively unless `BDWN_ZFS_SYNC_RECURSIVE="no"`.
+3. Sends it, incrementally from the snapshot found in step 1 (`zfs send -I`, so
+   every snapshot taken since the last sync is replicated too), or in full when
+   the two sides share none: first run, or remote dataset recreated.
+4. Destroys the local sync snapshots beyond the last `BDWN_ZFS_SYNC_KEEP`
+   (default 3). The remote keeps its own copies; the ones kept locally only
+   serve as bases for the next incremental stream.
+
+If the transfer fails, the snapshot just created is destroyed and the command
+exits non-zero, so the next run resumes incrementally from the last snapshot
+the remote actually has, instead of falling back to a full stream.
+
+### Configuration
+
+Everything lives in `/etc/bdwn/bdwn.conf`, alongside the restic settings.
+Three keys are required, the rest have defaults:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `BDWN_ZFS_SYNC_LOCAL_DATASET` | *required* | Local dataset to replicate |
+| `BDWN_ZFS_SYNC_REMOTE_DATASET` | *required* | Dataset receiving the copy; its parent must already exist |
+| `BDWN_ZFS_SYNC_HOST` | *required* | Remote server: a `Host` entry of the ssh config, or a hostname/IP |
+| `BDWN_ZFS_SYNC_SSH_USER` | ssh config | Dedicated SSH account on the remote server |
+| `BDWN_ZFS_SYNC_LOCAL_USER` | `bdwn` | Local unprivileged user the SSH client is dropped to |
+| `BDWN_ZFS_SYNC_SSH_DIR` | `/var/lib/bdwn/.ssh` | Holds `config`, the key and `known_hosts` |
+| `BDWN_ZFS_SYNC_SSH_KEY` | ssh config | Private key (`IdentitiesOnly` is set with it) |
+| `BDWN_ZFS_SYNC_PORT` | ssh config | SSH port |
+| `BDWN_ZFS_SYNC_SSH_OPTS` | *(none)* | Extra ssh options |
+| `BDWN_ZFS_SYNC_RECURSIVE` | `yes` | Replicate the children of the dataset (`snapshot -r`, `send -R`) |
+| `BDWN_ZFS_SYNC_SEND_OPTS` | *(none)* | Extra `zfs send` options, e.g. `-L -e -c`, or `-w` to keep an encrypted dataset encrypted on the wire and on the remote |
+| `BDWN_ZFS_SYNC_RECV_OPTS` | `-u -F` | Options of the remote `zfs receive` |
+| `BDWN_ZFS_SYNC_REMOTE_ZFS` | `zfs` | Command invoked on the remote server, e.g. `sudo zfs` |
+| `BDWN_ZFS_SYNC_KEEP` | `3` | Sync snapshots kept locally (minimum 1) |
+| `BDWN_ZFS_SYNC_SNAP_PREFIX` | `bdwn-sync` | Prefix of the snapshots created here |
+
+`-u` in the default `BDWN_ZFS_SYNC_RECV_OPTS` keeps the received dataset
+unmounted, which is what lets an unprivileged remote account receive it at all.
+`-F` rolls the remote copy back to its last snapshot before receiving, so a
+stray write on the target does not break the next incremental stream; it also
+means anything written to the remote copy is discarded.
+
+A minimal configuration:
+
+```sh
+BDWN_ZFS_SYNC_LOCAL_DATASET="tank/data"
+BDWN_ZFS_SYNC_REMOTE_DATASET="backup/srv1/data"
+BDWN_ZFS_SYNC_HOST="backup-remote"
+BDWN_ZFS_SYNC_SSH_USER="bdwn-zfs"
+```
+
+### Remote server setup
+
+The dedicated account needs no shell privileges beyond ZFS. Create it, install
+the public key of `/var/lib/bdwn/.ssh/`, create the parent dataset and delegate
+the receive permissions:
+
+```sh
+adduser --system --shell /bin/sh --home /home/bdwn-zfs bdwn-zfs
+install -d -o bdwn-zfs -g nogroup -m 0700 /home/bdwn-zfs/.ssh
+cat >> /home/bdwn-zfs/.ssh/authorized_keys   # paste the client public key
+
+zfs create -p backup/srv1
+zfs allow -u bdwn-zfs create,receive,mount,mountpoint,destroy,rollback,snapshot,hold backup/srv1
+```
+
+`zfs allow` covers everything the receive needs. On Linux the `mount`
+permission is not enough for an unprivileged user to actually mount a dataset,
+which is why the default `-u` never asks for a mount. If you drop `-u`, run the
+receive through `sudo` instead (`BDWN_ZFS_SYNC_REMOTE_ZFS="sudo zfs"`, with a
+matching NOPASSWD rule).
+
+On the client, record the host key once and test:
+
+```sh
+ssh-keyscan -p 22 zfs.example.com >> /var/lib/bdwn/.ssh/known_hosts
+chown bdwn:bdwn /var/lib/bdwn/.ssh/known_hosts
+bdwn zfs-sync
+```
+
+### Timer
+
+The package ships `bdwn-zfs-sync.service` (oneshot, hardened like
+`bdwn.service` plus what ZFS needs: `PrivateDevices=no` with a minimal
+`DeviceAllow` list and `CAP_SYS_ADMIN`) and `bdwn-zfs-sync.timer` (daily,
+persistent, 15 minutes of randomized delay). Nothing is enabled at install:
+
+```sh
+systemctl enable --now bdwn-zfs-sync.timer
+systemctl start bdwn-zfs-sync.service    # run one now
+journalctl -u bdwn-zfs-sync.service
+```
+
+Change the schedule with `systemctl edit bdwn-zfs-sync.timer` (`OnCalendar=hourly`
+is a common choice for a replication).
+
+Unlike `bdwn.service`, this unit needs no drop-in for ZFS: it is only ever used
+for replication, so the `/dev/zfs` access and `CAP_SYS_ADMIN` are part of the
+unit. It never holds the restic passphrase either, since `zfs-sync` does not
+open the repository.
+
+### Restoring
+
+The remote copy is a plain dataset: browse its snapshots with
+`zfs list -t snapshot backup/srv1/data`, and send one back the other way.
+
+```sh
+# on the remote server, sending back to the client
+zfs send backup/srv1/data@bdwn-sync-20260819T031500Z | ssh srv1 zfs receive -F tank/data-restored
 ```
 
 ## Libvirt VM backup (bdwn-libvirt)
@@ -600,6 +731,8 @@ server by `bdwn-server` are listed in [server/README.md](server/README.md).
 | `/var/cache/bdwn`                 | Restic cache                                      |
 | `/lib/systemd/system/bdwn.service`| Backup service (oneshot, hardened)               |
 | `/lib/systemd/system/bdwn.timer`  | Daily timer                                       |
+| `/lib/systemd/system/bdwn-zfs-sync.service` | ZFS replication service (oneshot, hardened) |
+| `/lib/systemd/system/bdwn-zfs-sync.timer`   | Daily ZFS replication timer              |
 | `/usr/share/bdwn/*.example`       | Example config, SSH config and ZFS systemd drop-in |
 | `/var/backups/bdwn`               | ZFS dumps, libvirt XML staging and the default `bdwn restore` target (`0700` root:root, created by postinst, removed on purge) |
 | `/usr/bin/bdwn-libvirt`           | Libvirt VM backup script (bdwn-libvirt package)   |
@@ -627,9 +760,15 @@ bdwn snapshots       # list snapshots
 bdwn list            # list the files held by a snapshot
 bdwn restore         # restore files out of a snapshot
 bdwn export          # mirror a local repository onto an external device
+bdwn zfs-sync        # replicate a ZFS dataset to the remote ZFS server
 bdwn check           # verify repository integrity
 bdwn restic <args>   # arbitrary restic command
 ```
+
+`bdwn zfs-sync` is the only command that does not touch the restic repository,
+and the only one that runs without `BDWN_REPO`, `RESTIC_PASSWORD` and
+`BACKUP_PATHS` being set, see
+[ZFS replication](#zfs-replication-bdwn-zfs-sync).
 
 `bdwn export [DIRECTORY]` needs a local `BDWN_REPO` and an external device, see
 [Export to an external device](#export-to-an-external-device):
@@ -703,13 +842,23 @@ bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
 - The passphrase is stored in `/etc/bdwn/bdwn.conf` (`0600` root:root, readable
   by root only). Keep this file secret and do not commit it anywhere.
 - The relaxations needed by ZFS (`CAP_SYS_ADMIN`, access to `/dev/zfs`) are
-  **not** applied by default: they are opt-in via the systemd drop-in described
-  in [ZFS backup](#zfs-backup).
+  **not** applied to `bdwn.service` by default: they are opt-in via the systemd
+  drop-in described in [ZFS backup](#zfs-backup). `bdwn-zfs-sync.service` does
+  carry them, since ZFS is all it does; it drops `CAP_DAC_READ_SEARCH` in
+  exchange, reads no backup path and never sees the restic passphrase.
+- `bdwn zfs-sync` follows the same rule as the SFTP repository: `zfs send` runs
+  as root, the ssh process receiving the stream runs as
+  `BDWN_ZFS_SYNC_LOCAL_USER` via `runuser`, and `BatchMode=yes` keeps a
+  misconfigured connection from hanging on a prompt.
+- The remote ZFS server holds unencrypted data unless the source dataset is
+  itself encrypted and `BDWN_ZFS_SYNC_SEND_OPTS="-w"` sends a raw stream.
+  Unlike the restic repository, the replication target is only as private as
+  the remote pool.
 
 ## Uninstall
 
 ```sh
 apt remove bdwn-libvirt   # if installed: stop and disable all bdwn-libvirt@<vm> timers, remove the VM backup script and units (bdwn cannot be removed while bdwn-libvirt depends on it)
-apt remove bdwn           # stop and disable the timer, remove program files
+apt remove bdwn           # stop and disable the bdwn and bdwn-zfs-sync timers, remove program files
 apt purge bdwn            # also remove the bdwn user, /etc/bdwn, /var/lib/bdwn, /var/cache/bdwn, /var/backups/bdwn
 ```

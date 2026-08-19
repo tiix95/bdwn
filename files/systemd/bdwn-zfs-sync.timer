@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily BackDown ZFS replication
+
+[Timer]
+# Change the schedule with 'systemctl edit bdwn-zfs-sync.timer' (an hourly
+# replication is a common choice: OnCalendar=hourly).
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

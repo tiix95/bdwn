@@ -1,0 +1,63 @@
+[Unit]
+Description=BackDown ZFS replication to the remote server
+After=network-online.target zfs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs as root: the ZFS ioctls behind 'zfs snapshot/send/destroy' need
+# CAP_SYS_ADMIN. The SSH connection carrying the stream is dropped to the
+# unprivileged BDWN_ZFS_SYNC_LOCAL_USER by /usr/bin/bdwn (runuser), so no root
+# process ever talks to the network. Unlike bdwn.service, nothing here holds
+# the restic passphrase: zfs-sync never opens the repository.
+ExecStart=/usr/bin/bdwn zfs-sync
+
+# Filesystem
+ProtectSystem=strict
+ProtectHome=yes
+# ssh appends to known_hosts and the unpriv user's home lives here
+ReadWritePaths=/var/lib/bdwn
+PrivateTmp=yes
+# zfs talks to the kernel through /dev/zfs, which PrivateDevices would hide.
+# Setting any DeviceAllow closes the policy, so the standard nodes must be
+# re-allowed too.
+PrivateDevices=no
+DeviceAllow=/dev/zfs rw
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/zero rw
+DeviceAllow=/dev/urandom r
+DeviceAllow=/dev/random r
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Privileges: root, reduced to the minimum capability set:
+# - CAP_SYS_ADMIN: ZFS ioctls (snapshot, send, destroy)
+# - CAP_SETUID/CAP_SETGID: runuser drops to the unpriv user for the SSH client
+# - CAP_KILL: terminate the unpriv-owned ssh child when a run is aborted
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_KILL
+
+# Syscalls
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @clock @swap @reboot @obsolete @cpu-emulation @debug @raw-io
+
+# Network (client only: nothing in the unit may listen)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
+
+# Misc
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+KeyringMode=private

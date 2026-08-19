@@ -9,6 +9,15 @@ Host backup-server-name
     IdentityFile /var/lib/bdwn/.ssh/id_ed25519
     IdentitiesOnly yes
 
+# 'bdwn zfs-sync' only: the ZFS replication target, when it is not the server
+# above. BDWN_ZFS_SYNC_HOST points at this Host entry.
+# Host zfs-remote
+#     HostName zfs.example.com
+#     Port 22
+#     User bdwn-zfs
+#     IdentityFile /var/lib/bdwn/.ssh/id_ed25519_zfs
+#     IdentitiesOnly yes
+
 # Before the first backup, record the remote host key so restic can connect
 # non-interactively (run as root):
 #   ssh-keyscan -p 22 backup.example.com >> /var/lib/bdwn/.ssh/known_hosts

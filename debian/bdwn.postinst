@@ -99,6 +99,8 @@ case "$1" in
         echo "  4. Enable the daily timer: systemctl enable --now bdwn.timer"
         echo "  5. Add the following nftables rule :"
         echo "    oifname eth0 ip daddr $BACKUP_SERVER_IP tcp dport $BACKUP_SERVER_PORT meta skuid $APP_USER counter accept comment \"backup-$BACKUP_SERVER\""
+        echo "  6. Optional ZFS replication: fill in the BDWN_ZFS_SYNC_* keys, then:"
+        echo "     systemctl enable --now bdwn-zfs-sync.timer"
         echo ""
         ;;
 
