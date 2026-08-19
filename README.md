@@ -117,9 +117,9 @@ the `/etc/hosts` line and print the suggested nftables rule:
 
 | Debconf key               | Default         | Purpose                                    |
 | ------------------------- | --------------- | ------------------------------------------ |
-| `bdwn/backup-server`      | `dagobah`       | SSH host alias of the backup server        |
-| `bdwn/backup-server-ip`   | `192.168.7.104` | IP written to `/etc/hosts` for the alias   |
-| `bdwn/backup-server-port` | `14789`         | Port used for the SFTP connection          |
+| `bdwn/backup-server`      | `backup-srv`       | SSH host alias of the backup server        |
+| `bdwn/backup-server-ip`   | `192.168.1.5` | IP written to `/etc/hosts` for the alias   |
+| `bdwn/backup-server-port` | `2222`         | Port used for the SFTP connection          |
 
 There is no interactive prompt. To override a default, preseed the values
 before installing:
