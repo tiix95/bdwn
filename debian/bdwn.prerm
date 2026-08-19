@@ -5,6 +5,8 @@ case "$1" in
     remove|deconfigure)
         systemctl stop bdwn.timer > /dev/null 2>&1 || true
         systemctl disable bdwn.timer > /dev/null 2>&1 || true
+        systemctl stop bdwn-zfs-sync.timer > /dev/null 2>&1 || true
+        systemctl disable bdwn-zfs-sync.timer > /dev/null 2>&1 || true
         ;;
 
     upgrade|failed-upgrade)

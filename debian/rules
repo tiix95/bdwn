@@ -20,6 +20,8 @@ override_dh_auto_install:
 	install -d debian/bdwn/lib/systemd/system
 	install -m 0644 files/systemd/bdwn.service debian/bdwn/lib/systemd/system/bdwn.service
 	install -m 0644 files/systemd/bdwn.timer debian/bdwn/lib/systemd/system/bdwn.timer
+	install -m 0644 files/systemd/bdwn-zfs-sync.service debian/bdwn/lib/systemd/system/bdwn-zfs-sync.service
+	install -m 0644 files/systemd/bdwn-zfs-sync.timer debian/bdwn/lib/systemd/system/bdwn-zfs-sync.timer
 	install -d debian/bdwn-server/usr/bin
 	install -m 0755 server/setup-backup-user.sh debian/bdwn-server/usr/bin/bdwn-setup-backup-user
 	install -m 0755 server/bdwn-export.sh debian/bdwn-server/usr/bin/bdwn-export

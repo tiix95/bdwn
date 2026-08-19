@@ -18,6 +18,9 @@ Description: Encrypted server backups to an SFTP repository
  using restic. Backups are encrypted with a passphrase and driven by a
  systemd timer running as an unprivileged system user. Configuration lives
  in /etc/bdwn/bdwn.conf and the SSH connection in /var/lib/bdwn/.ssh/config.
+ .
+ 'bdwn zfs-sync' additionally replicates a local ZFS dataset onto a dataset of
+ a remote server with 'zfs send' over SSH, incrementally, on its own timer.
 
 Package: bdwn-server
 Architecture: all
