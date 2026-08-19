@@ -298,7 +298,11 @@ cmd_zfs_sync() {
     ZFS_SYNC_PREFIX="${BDWN_ZFS_SYNC_SNAP_PREFIX:-bdwn-sync}"
     ZFS_SYNC_KEEP="${BDWN_ZFS_SYNC_KEEP:-3}"
     ZFS_SYNC_REMOTE_ZFS="${BDWN_ZFS_SYNC_REMOTE_ZFS:-zfs}"
-    ZFS_SYNC_RECV_OPTS="${BDWN_ZFS_SYNC_RECV_OPTS:--u -F}"
+    # '-x mountpoint' is not optional in spirit: 'zfs send -R' carries the
+    # properties of the source, so without it the copy inherits the mountpoint
+    # of the dataset it mirrors and mounts over it on the remote server,
+    # shadowing whatever lives there.
+    ZFS_SYNC_RECV_OPTS="${BDWN_ZFS_SYNC_RECV_OPTS:--u -F -x mountpoint}"
     ZFS_SYNC_SSH_DIR="${BDWN_ZFS_SYNC_SSH_DIR:-/var/lib/bdwn/.ssh}"
 
     # At least one snapshot must survive the pruning: it is the base of the

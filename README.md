@@ -341,16 +341,33 @@ Three keys are required, the rest have defaults:
 | `BDWN_ZFS_SYNC_SSH_OPTS` | *(none)* | Extra ssh options |
 | `BDWN_ZFS_SYNC_RECURSIVE` | `yes` | Replicate the children of the dataset (`snapshot -r`, `send -R`) |
 | `BDWN_ZFS_SYNC_SEND_OPTS` | *(none)* | Extra `zfs send` options, e.g. `-L -e -c`, or `-w` to keep an encrypted dataset encrypted on the wire and on the remote |
-| `BDWN_ZFS_SYNC_RECV_OPTS` | `-u -F` | Options of the remote `zfs receive` |
+| `BDWN_ZFS_SYNC_RECV_OPTS` | `-u -F -x mountpoint` | Options of the remote `zfs receive`; setting it replaces the default rather than adding to it |
 | `BDWN_ZFS_SYNC_REMOTE_ZFS` | `zfs` | Command invoked on the remote server, e.g. `sudo zfs` |
 | `BDWN_ZFS_SYNC_KEEP` | `3` | Sync snapshots kept locally (minimum 1) |
 | `BDWN_ZFS_SYNC_SNAP_PREFIX` | `bdwn-sync` | Prefix of the snapshots created here |
 
-`-u` in the default `BDWN_ZFS_SYNC_RECV_OPTS` keeps the received dataset
-unmounted, which is what lets an unprivileged remote account receive it at all.
-`-F` rolls the remote copy back to its last snapshot before receiving, so a
-stray write on the target does not break the next incremental stream; it also
-means anything written to the remote copy is discarded.
+The three options of the default `BDWN_ZFS_SYNC_RECV_OPTS` each earn their
+place, and the key **replaces** that default when you set it, so repeat what
+you want to keep:
+
+- `-u` keeps the received dataset unmounted, which is what lets an
+  unprivileged remote account receive it at all.
+- `-F` rolls the remote copy back to its last snapshot before receiving, so a
+  stray write on the target does not break the next incremental stream; it
+  also means anything written to the remote copy is discarded.
+- `-x mountpoint` drops the `mountpoint` property carried by the stream.
+  `zfs send -R` is a replication stream: it preserves the properties of the
+  source, `mountpoint` included. Without `-x`, a source whose `mountpoint` is
+  set locally hands its own path to the copy, which then mounts **over the
+  dataset it mirrors** on the remote server and shadows whatever lives there
+  (a restic repository of that server, for instance, whose next writes land in
+  the copy and are wiped by the `-F` rollback of the following sync). Add
+  `-x canmount` if you also want to control auto-mounting.
+
+Check the source with `zfs get -s local mountpoint <dataset>`: a `local`
+source is exactly the case `-x mountpoint` protects against. If a copy already
+picked up the wrong mountpoint, fix it once on the remote server with
+`zfs unmount`, then `zfs inherit -r mountpoint <remote-dataset>`.
 
 A minimal configuration:
 
