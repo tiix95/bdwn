@@ -743,7 +743,11 @@ server by `bdwn-server` are listed in [server/README.md](server/README.md).
 
 Once enabled (`systemctl enable --now bdwn.timer`), the timer runs a backup
 daily with a randomized delay and no further manual action. On the first backup,
-bdwn initializes the restic repository automatically.
+bdwn initializes the restic repository automatically. It only does so for a
+repository restic reports as absent: a repository that exists but cannot be
+opened (unwritable cache, wrong passphrase, read-only mount, unreachable
+server) aborts the run with restic's own error, rather than being initialized
+over. See [Troubleshooting the backup service](#troubleshooting-the-backup-service).
 
 Trigger a backup now:
 
@@ -825,6 +829,59 @@ snapshot by tag during a restore:
 
 ```sh
 bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
+```
+
+### Troubleshooting the backup service
+
+When `bdwn backup` works by hand but `bdwn.service` fails, the difference is
+almost never the configuration: it is the sandbox. The unit runs as root but
+with `CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+CAP_KILL`, so it can **read** any path regardless of permissions, but it has
+no `CAP_DAC_OVERRIDE` and therefore **cannot write** to a file or directory
+owned by another user. A root shell has every capability and does not hit
+this.
+
+Anything the backup must write is a candidate:
+
+```sh
+find /var/cache/bdwn ! -user root -printf '%u %m %p\n' | head
+ls -ldn /path/to/repo /path/to/repo/data          # local repository
+```
+
+A cache left over from a version where the service ran as the `bdwn` user is
+the classic one; the postinst migrates it, but a manual run as `bdwn` can
+recreate it:
+
+```sh
+chown -R root:root /var/cache/bdwn
+```
+
+`ProtectSystem=strict` is the other half: a local repository stays readable but
+read-only until its directory is added through the `local-repo.conf` drop-in,
+see [Local repository](#local-repository).
+
+To get restic's real error inside the exact sandbox of the unit, override
+`ExecStart` temporarily. `bdwn restic <args>` goes through the same options as
+the backup and does not hide its output:
+
+```sh
+mkdir -p /etc/systemd/system/bdwn.service.d
+cat > /etc/systemd/system/bdwn.service.d/diag.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/bdwn restic cat config
+EOF
+systemctl daemon-reload
+systemctl start bdwn.service
+journalctl -u bdwn.service -n 40 --no-pager
+rm /etc/systemd/system/bdwn.service.d/diag.conf && systemctl daemon-reload
+```
+
+Check the active drop-ins too, one of them may relax or tighten the unit in a
+way you forgot:
+
+```sh
+systemctl cat bdwn.service
 ```
 
 ## Security notes

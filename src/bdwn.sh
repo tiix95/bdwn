@@ -103,12 +103,44 @@ cleanup_zfs() {
     find "$ZFS_DUMP_DIR" -name '*.zfs' -type f -delete
 }
 
-# Initialize the repository the first time it is used.
+# Initialize the repository the first time it is used, and only then.
+#
+# The probe used to swallow its own error output, so every failure looked like
+# a missing repository: an unwritable cache, a wrong passphrase, a read-only
+# mount or an unreachable server all ended in an init attempt over an existing
+# repository, and the real cause never reached the journal. Now anything but a
+# genuinely absent repository is reported and aborts the run.
 ensure_repo() {
-    if ! run_restic cat config >/dev/null 2>&1; then
-        echo "bdwn: initializing repository $RESTIC_REPOSITORY"
-        run_restic init
+    status=0
+    probe=$(run_restic cat config 2>&1) || status=$?
+    if [ "$status" = 0 ]; then
+        return 0
     fi
+
+    # restic exits 10 when the repository does not exist (since 0.17). Older
+    # versions exit 1 on every failure, so their message is matched as well:
+    # restic ends a failed lookup with this question.
+    missing=no
+    if [ "$status" = 10 ]; then
+        missing=yes
+    else
+        case "$probe" in
+        *"Is there a repository at the following location?"*) missing=yes ;;
+        esac
+    fi
+
+    if [ "$missing" = no ]; then
+        echo "$probe" >&2
+        die "cannot open repository $RESTIC_REPOSITORY (restic exit $status)
+The repository is there but unusable, so bdwn will not initialize over it.
+Fix the cause reported above. Under the systemd unit, the usual ones are a
+cache or repository directory root cannot write (the unit drops
+CAP_DAC_OVERRIDE: 'chown -R root:root /var/cache/bdwn'), a local repository
+missing its ReadWritePaths drop-in, or a passphrase that does not match."
+    fi
+
+    echo "bdwn: initializing repository $RESTIC_REPOSITORY"
+    run_restic init
 }
 
 cmd_backup() {
