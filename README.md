@@ -341,16 +341,33 @@ Three keys are required, the rest have defaults:
 | `BDWN_ZFS_SYNC_SSH_OPTS` | *(none)* | Extra ssh options |
 | `BDWN_ZFS_SYNC_RECURSIVE` | `yes` | Replicate the children of the dataset (`snapshot -r`, `send -R`) |
 | `BDWN_ZFS_SYNC_SEND_OPTS` | *(none)* | Extra `zfs send` options, e.g. `-L -e -c`, or `-w` to keep an encrypted dataset encrypted on the wire and on the remote |
-| `BDWN_ZFS_SYNC_RECV_OPTS` | `-u -F` | Options of the remote `zfs receive` |
+| `BDWN_ZFS_SYNC_RECV_OPTS` | `-u -F -x mountpoint` | Options of the remote `zfs receive`; setting it replaces the default rather than adding to it |
 | `BDWN_ZFS_SYNC_REMOTE_ZFS` | `zfs` | Command invoked on the remote server, e.g. `sudo zfs` |
 | `BDWN_ZFS_SYNC_KEEP` | `3` | Sync snapshots kept locally (minimum 1) |
 | `BDWN_ZFS_SYNC_SNAP_PREFIX` | `bdwn-sync` | Prefix of the snapshots created here |
 
-`-u` in the default `BDWN_ZFS_SYNC_RECV_OPTS` keeps the received dataset
-unmounted, which is what lets an unprivileged remote account receive it at all.
-`-F` rolls the remote copy back to its last snapshot before receiving, so a
-stray write on the target does not break the next incremental stream; it also
-means anything written to the remote copy is discarded.
+The three options of the default `BDWN_ZFS_SYNC_RECV_OPTS` each earn their
+place, and the key **replaces** that default when you set it, so repeat what
+you want to keep:
+
+- `-u` keeps the received dataset unmounted, which is what lets an
+  unprivileged remote account receive it at all.
+- `-F` rolls the remote copy back to its last snapshot before receiving, so a
+  stray write on the target does not break the next incremental stream; it
+  also means anything written to the remote copy is discarded.
+- `-x mountpoint` drops the `mountpoint` property carried by the stream.
+  `zfs send -R` is a replication stream: it preserves the properties of the
+  source, `mountpoint` included. Without `-x`, a source whose `mountpoint` is
+  set locally hands its own path to the copy, which then mounts **over the
+  dataset it mirrors** on the remote server and shadows whatever lives there
+  (a restic repository of that server, for instance, whose next writes land in
+  the copy and are wiped by the `-F` rollback of the following sync). Add
+  `-x canmount` if you also want to control auto-mounting.
+
+Check the source with `zfs get -s local mountpoint <dataset>`: a `local`
+source is exactly the case `-x mountpoint` protects against. If a copy already
+picked up the wrong mountpoint, fix it once on the remote server with
+`zfs unmount`, then `zfs inherit -r mountpoint <remote-dataset>`.
 
 A minimal configuration:
 
@@ -743,7 +760,11 @@ server by `bdwn-server` are listed in [server/README.md](server/README.md).
 
 Once enabled (`systemctl enable --now bdwn.timer`), the timer runs a backup
 daily with a randomized delay and no further manual action. On the first backup,
-bdwn initializes the restic repository automatically.
+bdwn initializes the restic repository automatically. It only does so for a
+repository restic reports as absent: a repository that exists but cannot be
+opened (unwritable cache, wrong passphrase, read-only mount, unreachable
+server) aborts the run with restic's own error, rather than being initialized
+over. See [Troubleshooting the backup service](#troubleshooting-the-backup-service).
 
 Trigger a backup now:
 
@@ -825,6 +846,59 @@ snapshot by tag during a restore:
 
 ```sh
 bdwn restic restore latest --tag libvirt-myvm --target /tmp/restore
+```
+
+### Troubleshooting the backup service
+
+When `bdwn backup` works by hand but `bdwn.service` fails, the difference is
+almost never the configuration: it is the sandbox. The unit runs as root but
+with `CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETUID CAP_SETGID
+CAP_KILL`, so it can **read** any path regardless of permissions, but it has
+no `CAP_DAC_OVERRIDE` and therefore **cannot write** to a file or directory
+owned by another user. A root shell has every capability and does not hit
+this.
+
+Anything the backup must write is a candidate:
+
+```sh
+find /var/cache/bdwn ! -user root -printf '%u %m %p\n' | head
+ls -ldn /path/to/repo /path/to/repo/data          # local repository
+```
+
+A cache left over from a version where the service ran as the `bdwn` user is
+the classic one; the postinst migrates it, but a manual run as `bdwn` can
+recreate it:
+
+```sh
+chown -R root:root /var/cache/bdwn
+```
+
+`ProtectSystem=strict` is the other half: a local repository stays readable but
+read-only until its directory is added through the `local-repo.conf` drop-in,
+see [Local repository](#local-repository).
+
+To get restic's real error inside the exact sandbox of the unit, override
+`ExecStart` temporarily. `bdwn restic <args>` goes through the same options as
+the backup and does not hide its output:
+
+```sh
+mkdir -p /etc/systemd/system/bdwn.service.d
+cat > /etc/systemd/system/bdwn.service.d/diag.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/bdwn restic cat config
+EOF
+systemctl daemon-reload
+systemctl start bdwn.service
+journalctl -u bdwn.service -n 40 --no-pager
+rm /etc/systemd/system/bdwn.service.d/diag.conf && systemctl daemon-reload
+```
+
+Check the active drop-ins too, one of them may relax or tighten the unit in a
+way you forgot:
+
+```sh
+systemctl cat bdwn.service
 ```
 
 ## Security notes
