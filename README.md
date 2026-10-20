@@ -167,6 +167,8 @@ use no spaces around `=`.
 | `BDWN_ZFS_DUMP_DIR` | no       | Directory receiving the ZFS dumps. Defaults to `/var/backups/bdwn/zfs`. If changed, adjust `ReadWritePaths` in the systemd drop-in. |
 | `BDWN_LIBVIRT_SHUTDOWN_TIMEOUT` | no | Seconds to wait for a clean VM shutdown before aborting. Defaults to `300`. Only used by `bdwn-libvirt`. |
 | `BDWN_LIBVIRT_MERGE_MODE` | no | How the snapshot overlay is merged back: `auto` (default), `live` or `cold`. See [Merge modes](#merge-modes). Only used by `bdwn-libvirt`. |
+| `BDWN_LIBVIRT_RETRIES` | no | Export attempts before giving up (minimum 1). Defaults to `3`. Only used by `bdwn-libvirt`. |
+| `BDWN_LIBVIRT_RETRY_DELAY` | no | Seconds to wait between failed export attempts. Defaults to `60`. Only used by `bdwn-libvirt`. |
 
 Example:
 
@@ -472,6 +474,19 @@ restarts the VM. A run that dies between the snapshot and the merge leaves the
 VM on its overlay: `bdwn-libvirt repair <vm-name>` cleans that up, see
 [Repairing after a failed run](#repairing-after-a-failed-run).
 
+Step 4 (export) is retried up to `BDWN_LIBVIRT_RETRIES` times (default 3),
+waiting `BDWN_LIBVIRT_RETRY_DELAY` seconds (default 60) between attempts. Each
+failed attempt logs `bdwn-libvirt: export attempt N/RETRIES failed, retrying
+in Ds` to the journal. If every attempt fails, the script merges the overlay
+back on its own with a cold merge (VM stopped, `qemu-img commit`, VM
+restarted) before exiting non-zero, so a transient SFTP/network failure never
+leaves the VM stuck on its overlay: no manual `bdwn-libvirt repair` is needed,
+and the non-zero exit still makes systemd report
+`bdwn-libvirt@<vm>.service` as failed. If that automatic merge-back itself
+fails (e.g. `qemu-img commit` fails), the usual leftover-overlay error applies
+and `bdwn-libvirt repair <vm-name>` may still be needed, same as any other
+failure between the snapshot and the merge.
+
 ### Merge modes
 
 Merging the overlay back can be done live or with the VM stopped. Live is
@@ -500,6 +515,8 @@ enabled instances on removal):
 
 ```sh
 systemctl enable --now bdwn-libvirt@myvm.timer
+systemctl start bdwn-libvirt@myvm.service    # run one now
+journalctl -u bdwn-libvirt@myvm.service      # view logs (the template name alone shows nothing)
 ```
 
 Or run it by hand as root:
@@ -629,6 +646,20 @@ Merge it back before retrying:
 at the overlay. Snapshotting again would stack a second overlay on top.
 
 **Fix:** run `bdwn-libvirt repair <vm>`, then retry the backup.
+
+**Symptom:** the journal shows `bdwn-libvirt: export attempt N/RETRIES failed,
+retrying in Ds` one or more times, then the run exits non-zero.
+
+**Cause:** `bdwn restic backup` failed during export (transient SFTP/network
+issue is the common case). The run retried up to `BDWN_LIBVIRT_RETRIES`
+times, `BDWN_LIBVIRT_RETRY_DELAY` seconds apart, then gave up.
+
+**Fix:** none required on the VM side: the script already merged the overlay
+back with a cold merge before exiting, so the VM is back on its base image.
+Check why the export failed (connectivity, SFTP server, repository), then
+re-run `bdwn-libvirt <vm>` once it is fixed. If the automatic merge-back
+itself failed too, the usual leftover-overlay error applies instead, see
+above.
 
 **Symptom:** the run aborts before the shutdown with:
 

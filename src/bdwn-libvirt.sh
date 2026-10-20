@@ -3,7 +3,8 @@
 # Workflow: clean shutdown, cold external snapshot (qcow2 overlays), restart
 # the VM, then export the stable base images + domain XML through
 # '/usr/bin/bdwn restic backup' (which owns the repo, passphrase and SSH
-# privilege drop). Finally the overlays are merged back and removed, live
+# privilege drop), retrying that export on failure before giving up. Finally
+# the overlays are merged back and removed, live
 # (blockcommit) or cold (qemu-img commit), see BDWN_LIBVIRT_MERGE_MODE.
 # A VM that is already shut off is exported directly, no snapshot.
 # Meant to be run by the bdwn-libvirt@<vm>.timer systemd template as root.
@@ -45,6 +46,12 @@ case "$MERGE_MODE" in
 auto | live | cold) ;;
 *) die "invalid BDWN_LIBVIRT_MERGE_MODE: $MERGE_MODE (auto, live or cold)" ;;
 esac
+
+RETRIES="${BDWN_LIBVIRT_RETRIES:-3}"
+RETRY_DELAY="${BDWN_LIBVIRT_RETRY_DELAY:-60}"
+case "$RETRIES" in '' | *[!0-9]*) die "invalid BDWN_LIBVIRT_RETRIES: $RETRIES (positive integer)" ;; esac
+[ "$RETRIES" -ge 1 ] || die "BDWN_LIBVIRT_RETRIES must be at least 1"
+case "$RETRY_DELAY" in '' | *[!0-9]*) die "invalid BDWN_LIBVIRT_RETRY_DELAY: $RETRY_DELAY (non-negative integer seconds)" ;; esac
 
 virsh dominfo "$VM" >/dev/null 2>&1 || die "unknown libvirt domain: $VM"
 
@@ -197,10 +204,29 @@ cannot be merged back. Check then remove it before retrying:
 
     # Export domain XML and base images. restic reads the base files in place:
     # no local copy is needed, the running VM only touches the overlays.
+    # Transient failures (SFTP hiccup, repository lock...) are retried up to
+    # BDWN_LIBVIRT_RETRIES times before giving up. If the VM is still sitting
+    # on its overlay at that point, it is merged back onto its base image
+    # first: a failed backup must not leave the overlay running unattended.
     echo "bdwn-libvirt: exporting $VM to the bdwn repository"
-    bdwn init
-    # shellcheck disable=SC2086
-    bdwn restic backup --verbose --tag "libvirt-$VM" "$DOMAIN_XML" $BASE_DISKS
+    attempt=1
+    while true; do
+        # shellcheck disable=SC2086
+        if bdwn init && bdwn restic backup --verbose --tag "libvirt-$VM" "$DOMAIN_XML" $BASE_DISKS; then
+            break
+        fi
+        if [ "$attempt" -ge "$RETRIES" ]; then
+            echo "bdwn-libvirt: export of $VM failed after $RETRIES attempt(s), giving up" >&2
+            if [ "$WAS_RUNNING" = 1 ]; then
+                echo "bdwn-libvirt: merging the overlay back before failing" >&2
+                merge_cold
+            fi
+            die "export of $VM failed after $RETRIES attempts"
+        fi
+        echo "bdwn-libvirt: export attempt $attempt/$RETRIES failed, retrying in ${RETRY_DELAY}s" >&2
+        attempt=$((attempt + 1))
+        sleep "$RETRY_DELAY"
+    done
 
     if [ "$WAS_RUNNING" = 1 ]; then
         if [ "$MERGE_MODE" = cold ]; then
