@@ -21,6 +21,16 @@ This README documents the **client** side. The repository server side ships as
 a separate package, `bdwn-server`, documented in
 [server/README.md](server/README.md).
 
+## Portable client (bdwn-portable)
+
+`portable/bdwn_portable.py` is an independent, self-contained client for
+Linux and Windows desktops. It is a single Python file, not part of any of the
+deb packages, and shares no code or configuration with `bdwn`. It needs only
+Python 3.11+, restic and the OpenSSH client, and backs up to an SFTP server
+(a `bdwn-server` account works) with restic, through a setup wizard and a
+bilingual (French/English) menu. See [portable/README.md](portable/README.md)
+(in French).
+
 ## Dependencies
 
 All are standard Debian packages, declared in `debian/control` and pulled in
